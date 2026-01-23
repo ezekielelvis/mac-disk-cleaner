@@ -1,8 +1,6 @@
 use std::path::Path;
 use std::fs::{DirEntry, Metadata};
-use std::io;
 use chrono::{DateTime, Local};
-use crate::models::FileEntry;
 
 /// Read a directory and return its entries
 /// Returns None if the directory cannot be read
@@ -59,36 +57,6 @@ pub fn estimate_inaccessible_size(dir_path: &Path) -> u64 {
     } else {
         0
     }
-}
-
-/// Create a FileEntry from a directory entry
-pub fn create_file_entry(
-    entry: &DirEntry,
-    size: u64,
-    is_hidden: bool,
-    is_system: bool,
-) -> io::Result<FileEntry> {
-    let path = entry.path();
-    let metadata = entry.metadata()?;
-    let is_dir = metadata.is_dir();
-    let name = entry.file_name().to_string_lossy().to_string();
-    
-    let modified = metadata
-        .modified()
-        .ok()
-        .and_then(|t| t.elapsed().ok())
-        .map(|d| Local::now() - chrono::Duration::seconds(d.as_secs() as i64))
-        .unwrap_or_else(Local::now);
-    
-    Ok(FileEntry {
-        path,
-        size,
-        is_dir,
-        is_hidden,
-        is_system,
-        modified,
-        name,
-    })
 }
 
 /// Get the last modified time for a metadata object

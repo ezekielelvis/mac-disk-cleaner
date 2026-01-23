@@ -126,8 +126,9 @@ pub fn render_storage_bar(f: &mut Frame, storage: &StorageInfo, area: Rect) {
     // Storage gauge
     let used = humansize::format_size(storage.used_space, humansize::DECIMAL);
     let total = humansize::format_size(storage.total_space, humansize::DECIMAL);
+    let available = humansize::format_size(storage.available_space, humansize::DECIMAL);
     let usage = storage.usage_percent();
-    let label_text = format!("{} / {} ({:.0}% used)", used, total, usage * 100.0);
+    let label_text = format!("{} / {} ({:.0}% used) · {} free", used, total, usage * 100.0, available);
     
     let color = if usage >= 0.90 {
         Color::Red

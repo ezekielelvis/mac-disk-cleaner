@@ -1,6 +1,6 @@
 use anyhow::Result;
 use crate::models::{FileEntry, ScanResult, ScanProgress};
-use super::utils::is_system_path;
+use super::utils::{is_system_path, is_hidden_path};
 use super::fs_ops::*;
 use super::dir_calculator::DirectorySizeCalculator;
 use std::path::{Path, PathBuf};
@@ -143,6 +143,10 @@ impl Scanner {
         let total_dirs = dirs_count.load(Ordering::Relaxed);
         let total_sz = total_size.load(Ordering::Relaxed);
         
+        // Count hidden and system files
+        let hidden_count = final_entries.iter().filter(|e| e.is_hidden).count();
+        let system_count = final_entries.iter().filter(|e| e.is_system).count();
+        
         // Update final progress
         {
             let mut prog = progress.lock().await;
@@ -158,8 +162,8 @@ impl Scanner {
             total_size: total_sz,
             total_files,
             total_dirs,
-            hidden_count: 0,
-            system_count: 0,
+            hidden_count,
+            system_count,
         })
     }
 
@@ -253,7 +257,7 @@ impl Scanner {
 
                 // Track items above minimum size (or all directories for navigation)
                 if size >= min_size || is_dir {
-                    let is_hidden = name_str.starts_with('.');
+                    let is_hidden = is_hidden_path(&path);
                     let is_system = is_system_path(&path);
                     let modified = get_modified_time(&metadata);
 

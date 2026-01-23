@@ -20,10 +20,12 @@ pub fn render_header(f: &mut Frame, app: &App, area: Rect) {
     // Title and stats
     let stats = if let Some(ref result) = app.scan_result {
         format!(
-            "📄 {} files  📁 {} dirs  💾 {}  ✓ {} marked",
+            "📄 {} files  📁 {} dirs  💾 {}  ◌ {} hidden  ⚙ {} system  ✓ {} marked",
             result.total_files,
             result.total_dirs,
             humansize::format_size(result.total_size, humansize::DECIMAL),
+            result.hidden_count,
+            result.system_count,
             app.marked_for_deletion.len()
         )
     } else {
