@@ -1,3 +1,4 @@
+mod models;
 mod scanner;
 mod ui;
 mod analyzer;
