@@ -1,5 +1,67 @@
 use std::path::Path;
 
+/// Paths that should be completely skipped during scanning
+/// These are virtual filesystems or cause scanning issues
+const SKIP_PATHS: &[&str] = &[
+    // Virtual filesystems (no real files, causes issues)
+    "/dev",
+    "/proc",
+    "/sys",
+    "/.vol",
+    "/.fseventsd",
+    "/.Spotlight-V100",
+    "/.DocumentRevisions-V100",
+    
+    // Network and volume mounts (may hang or be slow)
+    "/Volumes/MobileBackups",
+    "/Network",
+    "/net",
+    "/home",  // Often a symlink or network mount
+    
+    // Time Machine snapshots (virtual, can be huge)
+    "/.MobileBackups",
+    "/.MobileBackups.trash",
+    
+    // Apple internal (permission issues, not real disk usage)
+    "/private/var/db/dyld",
+    "/private/var/folders",  // Temporary folders, recreated
+    "/private/var/vm",       // Virtual memory (swap files)
+    
+    // Recovery and boot partitions
+    "/System/Volumes/Data/.Spotlight-V100",
+    "/System/Volumes/Preboot",
+    "/System/Volumes/Recovery",
+    "/System/Volumes/Update",
+    "/System/Volumes/VM",
+];
+
+/// Check if a path should be skipped entirely during scanning
+#[inline(always)]
+pub fn should_skip_path(path: &Path) -> bool {
+    let path_str = path.to_string_lossy();
+    
+    // Skip exact matches and prefix matches
+    for skip_path in SKIP_PATHS {
+        if path_str.as_ref() == *skip_path || path_str.starts_with(&format!("{}/", skip_path)) {
+            return true;
+        }
+    }
+    
+    // Skip Volumes except the main data volume
+    if path_str.starts_with("/Volumes/") {
+        // Allow scanning /Volumes/Macintosh HD or similar real volumes
+        // Skip network drives and other mounted volumes that may hang
+        let volume_name = path_str.strip_prefix("/Volumes/").unwrap_or("");
+        if volume_name.contains("Time Machine") || 
+           volume_name.contains("Backup") ||
+           volume_name.starts_with(".") {
+            return true;
+        }
+    }
+    
+    false
+}
+
 #[inline(always)]
 pub fn is_hidden_path(path: &Path) -> bool {
     path.file_name()

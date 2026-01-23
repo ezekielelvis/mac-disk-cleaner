@@ -12,7 +12,7 @@ use std::path::PathBuf;
 #[command(name = "disk-cleaner")]
 #[command(about = "Smart disk space analyzer and cleaner", long_about = None)]
 struct Args {
-    /// Directory to scan (defaults to home directory)
+    /// Directory to scan (defaults to root / for full disk scan)
     #[arg(short, long)]
     path: Option<PathBuf>,
 
@@ -20,18 +20,27 @@ struct Args {
     #[arg(short, long, default_value = "1")]
     min_size: u64,
 
-    /// Scan depth limit
-    #[arg(short, long, default_value = "10")]
+    /// Scan depth limit (0 = unlimited)
+    #[arg(short, long, default_value = "0")]
     depth: usize,
+
+    /// Scan only home directory instead of full disk
+    #[arg(long)]
+    home: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
     
-    let scan_path = args.path.unwrap_or_else(|| {
+    let scan_path = if let Some(path) = args.path {
+        path
+    } else if args.home {
         dirs::home_dir().expect("Failed to get home directory")
-    });
+    } else {
+        // Default to root for full disk scan
+        PathBuf::from("/")
+    };
 
     // Run the TUI application
     ui::run_app(scan_path, args.min_size, args.depth).await?;

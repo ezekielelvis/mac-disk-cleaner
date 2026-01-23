@@ -4,7 +4,10 @@ A powerful, smart CLI disk space analyzer and cleaner built with Rust and Ratatu
 
 ## Features ✨
 
-- **Fast Scanning**: Efficiently scans directories to find large files and folders
+- **Full Disk Scan**: Scans the entire disk from root `/` by default with parallel workers
+- **Fast Parallel Scanning**: Uses 4 worker threads for significantly faster scans
+- **Smart Virtual FS Handling**: Automatically skips virtual filesystems (/dev, /proc, etc.)
+- **Accurate Disk Usage**: Uses block-level allocation for true disk space calculation
 - **Smart Categorization**: Automatically categorizes files into:
   - Cache files
   - Temporary files
@@ -17,6 +20,8 @@ A powerful, smart CLI disk space analyzer and cleaner built with Rust and Ratatu
 
 - **Interactive TUI**: Beautiful terminal user interface built with Ratatui
 - **Color-coded Display**: Different colors for different file categories
+- **System File Protection**: System files marked with ⚙️ and warnings before deletion
+- **Hidden File Detection**: Hidden files marked with ◌ indicator
 - **Smart Recommendations**: AI-powered suggestions on what to clean
 - **Batch Operations**: Mark multiple files/directories for deletion
 - **Safe Deletion**: Confirmation prompts before deletion
@@ -53,8 +58,11 @@ cargo install --path .
 ### Basic Usage
 
 ```bash
-# Scan home directory
+# Full disk scan (default - scans from /)
 disk-cleaner
+
+# Scan only home directory
+disk-cleaner --home
 
 # Scan a specific directory
 disk-cleaner --path /path/to/directory
@@ -62,8 +70,8 @@ disk-cleaner --path /path/to/directory
 # Set minimum file size (in MB)
 disk-cleaner --min-size 10
 
-# Set maximum scan depth
-disk-cleaner --depth 5
+# Unlimited depth (default is 0 = unlimited)
+disk-cleaner --depth 0
 ```
 
 ### Keyboard Shortcuts

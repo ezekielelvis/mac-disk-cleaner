@@ -15,6 +15,7 @@ impl DirectorySizeCalculator {
     }
     
     /// Record the size of files in a directory
+    #[allow(dead_code)]
     pub fn record_directory_size(&mut self, dir_path: PathBuf, size: u64) {
         *self.dir_sizes.entry(dir_path).or_insert(0) += size;
     }
