@@ -1323,13 +1323,6 @@ async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &m
         // Update progress snapshot
         if app.frame_count % 3 == 0 {
             if let Ok(prog) = app.scan_progress.try_lock() {
-                // Calculate category sizes from current entries
-                let mut category_sizes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-                for entry in &prog.entries {
-                    let cat = Analyzer::categorize_file(entry).as_str().to_string();
-                    *category_sizes.entry(cat).or_insert(0) += entry.size;
-                }
-                
                 app.last_progress_snapshot = ScanProgressSnapshot {
                     current_path: prog.current_path.clone(),
                     files_scanned: prog.files_scanned,
@@ -1341,7 +1334,8 @@ async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &m
                         .take(50)
                         .map(|e| (e.name.clone(), e.size, Analyzer::categorize_file(e).as_str().to_string()))
                         .collect(),
-                    category_sizes,
+                    // Use category sizes directly from scanner progress
+                    category_sizes: prog.category_sizes.clone(),
                 };
                 
                 if prog.is_complete {

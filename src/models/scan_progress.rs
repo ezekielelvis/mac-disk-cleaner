@@ -1,4 +1,5 @@
 use super::FileEntry;
+use std::collections::HashMap;
 
 #[derive(Debug, Clone)]
 pub struct ScanProgress {
@@ -8,6 +9,7 @@ pub struct ScanProgress {
     pub total_size_scanned: u64,
     pub is_complete: bool,
     pub entries: Vec<FileEntry>,
+    pub category_sizes: HashMap<String, u64>,
 }
 
 impl Default for ScanProgress {
@@ -19,6 +21,7 @@ impl Default for ScanProgress {
             total_size_scanned: 0,
             is_complete: false,
             entries: Vec::new(),
+            category_sizes: HashMap::new(),
         }
     }
 }

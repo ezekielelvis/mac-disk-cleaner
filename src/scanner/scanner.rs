@@ -3,7 +3,7 @@ use crate::models::{FileEntry, ScanResult, ScanProgress};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::collections::{VecDeque, HashSet};
+use std::collections::{VecDeque, HashSet, HashMap};
 use tokio::sync::Mutex;
 use chrono::{DateTime, Local};
 
@@ -121,6 +121,63 @@ impl Scanner {
         path_str.contains("/.ssh") ||
         path_str.contains("/.gnupg")
     }
+    
+    /// Fast path-based categorization for live scanning display
+    #[inline(always)]
+    fn categorize_path(path: &Path, is_hidden: bool, is_system: bool) -> &'static str {
+        let path_str = path.to_string_lossy();
+        let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("");
+        let ext = path.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+        
+        // Check path patterns first
+        if path_str.contains("/Caches/") || path_str.contains("/cache/") || name == "Cache" || name == "Caches" {
+            return "🗑️ Cache";
+        }
+        if path_str.contains("/Temp/") || path_str.contains("/tmp/") || name.starts_with("tmp") {
+            return "🌡️ Temp Files";
+        }
+        if name == "node_modules" || path_str.contains("/node_modules/") {
+            return "📦 node_modules";
+        }
+        if path_str.contains("/target/") && (path_str.contains("/debug/") || path_str.contains("/release/")) {
+            return "🔨 Build Artifacts";
+        }
+        if path_str.contains("/.cargo/") || path_str.contains("/.npm/") || path_str.contains("/.gradle/") ||
+           path_str.contains("/CocoaPods/") || path_str.contains("/.m2/") || path_str.contains("/pip/") {
+            return "📥 Package Cache";
+        }
+        if path_str.contains("/Library/") && !is_system {
+            return "📚 Library Files";
+        }
+        if path_str.contains("/Downloads/") {
+            return "⬇️ Downloads";
+        }
+        if path_str.contains("/Documents/") {
+            return "📄 Documents";
+        }
+        
+        // Check by extension
+        match ext.as_str() {
+            "log" | "logs" => return "📜 Log Files",
+            "mp4" | "mkv" | "avi" | "mov" | "mp3" | "wav" | "flac" | "m4a" | "aac" |
+            "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "webp" | "heic" |
+            "psd" | "ai" | "svg" => return "🎬 Media",
+            "zip" | "tar" | "gz" | "rar" | "7z" | "bz2" | "xz" | "dmg" | "iso" => return "🗜️ Archives",
+            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "rtf" | "odt" => return "📄 Documents",
+            "o" | "obj" | "class" | "pyc" | "pyo" => return "🔨 Build Artifacts",
+            _ => {}
+        }
+        
+        // Check flags
+        if is_system {
+            return "⚙️ System Files";
+        }
+        if is_hidden {
+            return "👁️ Hidden Files";
+        }
+        
+        "📁 Regular"
+    }
 
     /// Full scan - scans EVERYTHING, tracks inodes to avoid double-counting hard links
     pub async fn scan_with_progress(
@@ -152,6 +209,9 @@ impl Scanner {
         let entries = Arc::new(Mutex::new(Vec::<FileEntry>::with_capacity(50000)));
         let current_path = Arc::new(Mutex::new(String::new()));
         
+        // Track category sizes during scan
+        let category_sizes = Arc::new(std::sync::Mutex::new(HashMap::<String, u64>::new()));
+        
         // Progress updater task
         let files_count_c = files_count.clone();
         let dirs_count_c = dirs_count.clone();
@@ -161,6 +221,7 @@ impl Scanner {
         let entries_c = entries.clone();
         let current_path_c = current_path.clone();
         let progress_c = progress.clone();
+        let category_sizes_c = category_sizes.clone();
         
         let progress_task = tokio::spawn(async move {
             loop {
@@ -192,6 +253,11 @@ impl Scanner {
                         .collect();
                     prog.entries = top;
                 }
+                
+                // Update category sizes from shared tracker
+                if let Ok(cats) = category_sizes_c.try_lock() {
+                    prog.category_sizes = cats.clone();
+                }
             }
         });
 
@@ -202,6 +268,7 @@ impl Scanner {
         let dirs_count_main = dirs_count.clone();
         let total_size_main = total_size.clone();
         let scan_started_main = scan_started.clone();
+        let category_sizes_main = category_sizes.clone();
         
         let scan_result = tokio::task::spawn_blocking(move || -> Result<()> {
             scan_started_main.store(true, Ordering::Release);
@@ -216,6 +283,7 @@ impl Scanner {
                 &files_count_main,
                 &dirs_count_main,
                 &total_size_main,
+                &category_sizes_main,
             );
             
             Ok(())
@@ -278,6 +346,7 @@ impl Scanner {
         files_count: &Arc<AtomicUsize>,
         dirs_count: &Arc<AtomicUsize>,
         total_size: &Arc<AtomicU64>,
+        category_sizes: &Arc<std::sync::Mutex<HashMap<String, u64>>>,
     ) {
         use std::sync::mpsc;
         use std::thread;
@@ -327,10 +396,12 @@ impl Scanner {
             let hardlink_deduped = hardlink_deduped.clone();
             let is_full_disk_w = is_full_disk_shared.clone();
             let root_device_w = root_device_shared.clone();
+            let category_sizes_w = category_sizes.clone();
             
             let handle = thread::spawn(move || {
                 let mut local_entries = Vec::with_capacity(1000);
                 let mut update_counter = 0u32;
+                let mut local_category_sizes: HashMap<String, u64> = HashMap::new();
                 
                 loop {
                     let dir_path = {
@@ -359,11 +430,21 @@ impl Scanner {
                                 &skipped_different_fs,
                                 &hardlink_deduped,
                                 &mut update_counter,
+                                &mut local_category_sizes,
                             );
                             
                             if local_entries.len() >= 1000 {
                                 let _ = tx.send(std::mem::take(&mut local_entries));
                                 local_entries = Vec::with_capacity(1000);
+                            }
+                            
+                            // Periodically merge local category sizes into shared
+                            if update_counter % 100 == 0 && !local_category_sizes.is_empty() {
+                                if let Ok(mut shared_cats) = category_sizes_w.try_lock() {
+                                    for (cat, size) in local_category_sizes.drain() {
+                                        *shared_cats.entry(cat).or_insert(0) += size;
+                                    }
+                                }
                             }
                             
                             active.fetch_sub(1, Ordering::SeqCst);
@@ -381,6 +462,15 @@ impl Scanner {
                     
                     if complete.load(Ordering::Relaxed) {
                         break;
+                    }
+                }
+                
+                // Flush remaining local category sizes
+                if !local_category_sizes.is_empty() {
+                    if let Ok(mut shared_cats) = category_sizes_w.lock() {
+                        for (cat, size) in local_category_sizes.drain() {
+                            *shared_cats.entry(cat).or_insert(0) += size;
+                        }
                     }
                 }
                 
@@ -419,29 +509,6 @@ impl Scanner {
         }
         
         scan_complete.store(true, Ordering::Relaxed);
-        
-        // Final status
-        let total_scanned = total_size.load(Ordering::Relaxed);
-        let perm = skipped_permission.load(Ordering::Relaxed);
-        let virt = skipped_virtual.load(Ordering::Relaxed);
-        let diff_fs = skipped_different_fs.load(Ordering::Relaxed);
-        let deduped = hardlink_deduped.load(Ordering::Relaxed);
-        
-        eprintln!("✓ Scan completed:");
-        eprintln!("  • Total size: {}", humansize::format_size(total_scanned, humansize::DECIMAL));
-        eprintln!("  • Files: {}, Dirs: {}", files_count.load(Ordering::Relaxed), dirs_count.load(Ordering::Relaxed));
-        if perm > 0 {
-            eprintln!("  • Permission denied: {} paths", perm);
-        }
-        if virt > 0 {
-            eprintln!("  • Virtual/mount paths skipped: {}", virt);
-        }
-        if diff_fs > 0 {
-            eprintln!("  • Different filesystem skipped: {}", diff_fs);
-        }
-        if deduped > 0 {
-            eprintln!("  • Hard links deduplicated: {}", deduped);
-        }
     }
     
     /// Process a single directory
@@ -462,6 +529,7 @@ impl Scanner {
         skipped_different_fs: &Arc<AtomicUsize>,
         hardlink_deduped: &Arc<AtomicUsize>,
         update_counter: &mut u32,
+        local_category_sizes: &mut HashMap<String, u64>,
     ) {
         // Skip virtual paths and mount points that would cause double-counting
         if Self::should_skip_path(dir_path, is_full_disk) {
@@ -560,6 +628,12 @@ impl Scanner {
             } else if !is_hardlink_dupe {
                 files_count.fetch_add(1, Ordering::Relaxed);
                 total_size.fetch_add(size, Ordering::Relaxed);
+                
+                // Track category sizes
+                let is_hidden = Self::is_hidden_path(&path);
+                let is_system = Self::is_system_path(&path);
+                let category = Self::categorize_path(&path, is_hidden, is_system);
+                *local_category_sizes.entry(category.to_string()).or_insert(0) += size;
             }
             
             // Track items above minimum size or directories
