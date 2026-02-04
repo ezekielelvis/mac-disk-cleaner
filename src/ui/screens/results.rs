@@ -1,22 +1,24 @@
-#![allow(dead_code)]
-
 use ratatui::{
     Frame,
     layout::{Alignment, Constraint, Direction, Layout, Rect},
     style::{Color, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Gauge, List, ListItem, Paragraph, Tabs, Wrap},
+    widgets::{Block, Borders, Gauge, List, ListItem, Paragraph, Tabs, Wrap},
 };
 use crate::analyzer::Analyzer;
 use crate::ui::app::App;
 use crate::ui::types::{AppState, ViewMode};
 use crate::ui::colors::*;
+use crate::ui::components::render_stat_block;
 
 /// Render the scan complete summary screen with quick actions
 pub fn render_scan_complete(f: &mut Frame, app: &App, area: Rect) {
+    // Responsive constraints
+    let margin = if area.width < 80 { 1 } else { 2 };
+    
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(2)
+        .margin(margin)
         .constraints([
             Constraint::Length(5),    // Header with checkmark
             Constraint::Length(8),    // Summary stats
@@ -55,36 +57,16 @@ pub fn render_scan_complete(f: &mut Frame, app: &App, area: Rect) {
             ])
             .split(chunks[1]);
 
-        // Files scanned
-        let files_block = render_stat_block(
-            "📄 FILES",
-            &format!("{}", result.total_files),
-            ACCENT
-        );
+        let files_block = render_stat_block("📄 FILES", &format!("{}", result.total_files), ACCENT);
         f.render_widget(files_block, stats_chunks[0]);
 
-        // Directories
-        let dirs_block = render_stat_block(
-            "📁 DIRECTORIES",
-            &format!("{}", result.total_dirs),
-            SUCCESS
-        );
+        let dirs_block = render_stat_block("📁 DIRECTORIES", &format!("{}", result.total_dirs), SUCCESS);
         f.render_widget(dirs_block, stats_chunks[1]);
 
-        // Total size (use actual disk space, not scanned size)
-        let total_block = render_stat_block(
-            "💾 DISK USED",
-            &humansize::format_size(app.storage_info.used_space, humansize::DECIMAL),
-            WARNING
-        );
+        let total_block = render_stat_block("💾 DISK USED", &humansize::format_size(app.storage_info.used_space, humansize::DECIMAL), WARNING);
         f.render_widget(total_block, stats_chunks[2]);
 
-        // Potential savings
-        let savings_block = render_stat_block(
-            "🎯 SAFE TO DELETE",
-            &humansize::format_size(safe_size, humansize::DECIMAL),
-            Color::Rgb(34, 197, 94)
-        );
+        let savings_block = render_stat_block("🎯 SAFE TO DELETE", &humansize::format_size(safe_size, humansize::DECIMAL), Color::Rgb(34, 197, 94));
         f.render_widget(savings_block, stats_chunks[3]);
 
         // Top categories
@@ -144,9 +126,11 @@ pub fn render_scan_complete(f: &mut Frame, app: &App, area: Rect) {
         Line::from(vec![
             Span::styled("  Press ", Style::default().fg(MUTED)),
             Span::styled("Enter", Style::default().fg(ACCENT).bold()),
-            Span::styled(" Browse & Delete    ", Style::default().fg(MUTED)),
+            Span::styled(" Browse Files    ", Style::default().fg(MUTED)),
+            Span::styled("f", Style::default().fg(SUCCESS).bold()),
+            Span::styled(" All Files    ", Style::default().fg(MUTED)),
             Span::styled("d", Style::default().fg(WARNING).bold()),
-            Span::styled(" Detailed Results    ", Style::default().fg(MUTED)),
+            Span::styled(" Details    ", Style::default().fg(MUTED)),
             Span::styled("s", Style::default().fg(SUCCESS).bold()),
             Span::styled(" Select Safe    ", Style::default().fg(MUTED)),
             Span::styled("h", Style::default().fg(ACCENT).bold()),
@@ -162,33 +146,26 @@ pub fn render_scan_complete(f: &mut Frame, app: &App, area: Rect) {
     f.render_widget(actions, chunks[4]);
 }
 
-/// Render detailed scan results with comprehensive statistics and breakdowns
+/// Render detailed scan results
 pub fn render_scan_details(f: &mut Frame, app: &App, area: Rect) {
+    let margin = if area.width < 80 { 1 } else { 1 };
+    
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .margin(1)
+        .margin(margin)
         .constraints([
-            Constraint::Length(4),    // Header with scan summary
-            Constraint::Length(6),    // Disk usage breakdown 
-            Constraint::Length(8),    // Category breakdown with charts
-            Constraint::Min(8),       // Large files and system breakdown
-            Constraint::Length(3),    // Action bar
+            Constraint::Length(4),    // Header
+            Constraint::Length(6),    // Disk usage
+            Constraint::Length(8),    // Category breakdown
+            Constraint::Min(6),       // Analysis
+            Constraint::Length(3),    // Actions
         ])
         .split(area);
 
-    // Header with scan summary
     render_scan_details_header(f, app, chunks[0]);
-    
-    // Disk usage breakdown
     render_disk_usage_breakdown(f, app, chunks[1]);
-    
-    // Category breakdown with visual charts
     render_category_breakdown_detailed(f, app, chunks[2]);
-    
-    // Large files and system analysis
     render_detailed_analysis(f, app, chunks[3]);
-    
-    // Action bar
     render_scan_details_actions(f, app, chunks[4]);
 }
 
@@ -233,13 +210,9 @@ fn render_scan_details_header(f: &mut Frame, app: &App, area: Rect) {
 fn render_disk_usage_breakdown(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),  // Storage usage gauge
-            Constraint::Percentage(50),  // File type breakdown
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    // Storage usage with detailed breakdown
     let storage = &app.storage_info;
     let usage = storage.usage_percent();
     let bar_color = if usage > 0.9 { DANGER } else if usage > 0.75 { WARNING } else { SUCCESS };
@@ -273,12 +246,11 @@ fn render_disk_usage_breakdown(f: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
     f.render_widget(storage_widget, chunks[0]);
 
-    // File type distribution
     if let Some(ref result) = app.scan_result {
         let regular_files = result.entries.iter().filter(|e| !e.is_dir && !e.is_hidden && !e.is_system).count();
         let hidden_files = result.hidden_count;
         let system_files = result.system_count;
-        let total_files = result.total_files;
+        let total_files = result.total_files.max(1);
 
         let type_widget = Paragraph::new(vec![
             Line::from(""),
@@ -309,13 +281,9 @@ fn render_disk_usage_breakdown(f: &mut Frame, app: &App, area: Rect) {
 fn render_category_breakdown_detailed(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(60),  // Category list with bars
-            Constraint::Percentage(40),  // Safety analysis
-        ])
+        .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    // Enhanced category breakdown with visual bars
     let mut categories: Vec<_> = app.categories.iter().collect();
     categories.sort_by(|a, b| {
         let size_a: u64 = a.1.iter().map(|e| e.size).sum();
@@ -329,7 +297,7 @@ fn render_category_breakdown_detailed(f: &mut Frame, app: &App, area: Rect) {
 
     let mut cat_lines = vec![Line::from("")];
     
-    for (i, (category, entries)) in categories.iter().take(6).enumerate() {
+    for (i, (category, entries)) in categories.iter().take(5).enumerate() {
         let total_size: u64 = entries.iter().map(|e| e.size).sum();
         let percentage = if grand_total > 0 {
             total_size as f64 / grand_total as f64 * 100.0
@@ -341,29 +309,17 @@ fn render_category_breakdown_detailed(f: &mut Frame, app: &App, area: Rect) {
         let safety_icon = if is_safe { "✓" } else { "!" };
         let safety_color = if is_safe { SUCCESS } else { WARNING };
         
-        // Visual bar representation
-        let bar_width = ((percentage / 100.0) * 20.0) as usize;
-        let bar = "█".repeat(bar_width) + &"░".repeat(20_usize.saturating_sub(bar_width));
+        let bar_width = ((percentage / 100.0) * 15.0) as usize;
+        let bar = "█".repeat(bar_width) + &"░".repeat(15_usize.saturating_sub(bar_width));
         
         cat_lines.push(Line::from(vec![
             Span::styled(format!(" {} ", safety_icon), Style::default().fg(safety_color)),
-            Span::styled(format!("{:<16}", category.as_str()), Style::default().fg(category.color())),
-            Span::styled(format!("{:>5.1}%", percentage), Style::default().fg(TEXT_DIM)),
-        ]));
-        
-        cat_lines.push(Line::from(vec![
-            Span::styled("   ", Style::default()),
+            Span::styled(format!("{:<14}", category.as_str()), Style::default().fg(category.color())),
             Span::styled(bar, Style::default().fg(category.color())),
+            Span::styled(format!(" {:>5.1}%", percentage), Style::default().fg(TEXT_DIM)),
         ]));
         
-        cat_lines.push(Line::from(vec![
-            Span::styled("   ", Style::default()),
-            Span::styled(format!("{} items", entries.len()), Style::default().fg(MUTED)),
-            Span::styled("  │  ", Style::default().fg(Color::Rgb(55, 55, 75))),
-            Span::styled(humansize::format_size(total_size, humansize::DECIMAL), Style::default().fg(TEXT)),
-        ]));
-        
-        if i < 5 { cat_lines.push(Line::from("")); }
+        if i < 4 { cat_lines.push(Line::from("")); }
     }
 
     let categories_widget = Paragraph::new(cat_lines)
@@ -373,163 +329,68 @@ fn render_category_breakdown_detailed(f: &mut Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
     f.render_widget(categories_widget, chunks[0]);
 
-    // Safety analysis summary
+    // Safety summary
     let safe_categories: Vec<_> = categories.iter().filter(|(cat, _)| cat.is_safe_to_delete()).collect();
-    let unsafe_categories: Vec<_> = categories.iter().filter(|(cat, _)| !cat.is_safe_to_delete()).collect();
-    
     let safe_total: u64 = safe_categories.iter()
-        .map(|(_, entries)| entries.iter().map(|e| e.size).sum::<u64>())
-        .sum();
-    let unsafe_total: u64 = unsafe_categories.iter()
         .map(|(_, entries)| entries.iter().map(|e| e.size).sum::<u64>())
         .sum();
     
     let safety_widget = Paragraph::new(vec![
         Line::from(""),
-        Line::from(vec![
-            Span::styled("🛡 Safety Analysis", Style::default().fg(TEXT).bold()),
-        ]),
+        Line::from(vec![Span::styled("🛡 Safety Analysis", Style::default().fg(TEXT).bold())]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  ✓ Safe to delete:", Style::default().fg(SUCCESS)),
         ]),
         Line::from(vec![
-            Span::styled("    Categories:  ", Style::default().fg(MUTED)),
-            Span::styled(format!("{}", safe_categories.len()), Style::default().fg(SUCCESS)),
-        ]),
-        Line::from(vec![
-            Span::styled("    Size:        ", Style::default().fg(MUTED)),
+            Span::styled("    ", Style::default()),
             Span::styled(humansize::format_size(safe_total, humansize::DECIMAL), Style::default().fg(SUCCESS)),
         ]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  ! Review first:", Style::default().fg(WARNING)),
-        ]),
-        Line::from(vec![
-            Span::styled("    Categories:  ", Style::default().fg(MUTED)),
-            Span::styled(format!("{}", unsafe_categories.len()), Style::default().fg(WARNING)),
-        ]),
-        Line::from(vec![
-            Span::styled("    Size:        ", Style::default().fg(MUTED)),
-            Span::styled(humansize::format_size(unsafe_total, humansize::DECIMAL), Style::default().fg(WARNING)),
+            Span::styled("  Press ", Style::default().fg(MUTED)),
+            Span::styled("s", Style::default().fg(SUCCESS)),
+            Span::styled(" to select all safe items", Style::default().fg(MUTED)),
         ]),
     ])
     .block(Block::default()
-        .title(" ⚖ Safety Assessment ")
+        .title(" ⚖ Safety ")
         .borders(Borders::ALL)
         .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
     f.render_widget(safety_widget, chunks[1]);
 }
 
 fn render_detailed_analysis(f: &mut Frame, app: &App, area: Rect) {
-    let chunks = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Percentage(50),  // Largest files
-            Constraint::Percentage(50),  // Age analysis
-        ])
-        .split(area);
-
-    // Top 10 largest files
     if let Some(ref result) = app.scan_result {
         let mut large_files: Vec<_> = result.entries.iter()
-            .filter(|e| !e.is_dir && e.size > 10 * 1024 * 1024) // Files > 10MB
+            .filter(|e| !e.is_dir && e.size > 10 * 1024 * 1024)
             .collect();
         large_files.sort_by(|a, b| b.size.cmp(&a.size));
         
         let mut large_lines = vec![Line::from("")];
-        for (i, entry) in large_files.iter().take(8).enumerate() {
-            let name_display = if entry.name.len() > 20 {
-                format!("{}...", &entry.name[..17])
+        for (i, entry) in large_files.iter().take(5).enumerate() {
+            let name_display = if entry.name.len() > 25 {
+                format!("{}...", &entry.name[..22])
             } else {
                 entry.name.clone()
             };
             
             let category = Analyzer::categorize_file(entry);
-            let cat_name = category.as_str().to_string();
-            let cat_color = category.color();
-            let safety_icon = if category.is_safe_to_delete() && !entry.is_system { "✓" } else { "!" };
-            let safety_color = if category.is_safe_to_delete() && !entry.is_system { SUCCESS } else { WARNING };
             
             large_lines.push(Line::from(vec![
                 Span::styled(format!("{:>2}. ", i + 1), Style::default().fg(MUTED)),
-                Span::styled(format!("{} ", safety_icon), Style::default().fg(safety_color)),
                 Span::styled(name_display, Style::default().fg(TEXT)),
+                Span::styled(format!("  {:>10}", humansize::format_size(entry.size, humansize::DECIMAL)), Style::default().fg(ACCENT)),
+                Span::styled(format!("  {}", category.as_str()), Style::default().fg(category.color())),
             ]));
-            
-            large_lines.push(Line::from(vec![
-                Span::styled("    ", Style::default()),
-                Span::styled(format!("{:>10}", humansize::format_size(entry.size, humansize::DECIMAL)), Style::default().fg(ACCENT)),
-                Span::styled("  ", Style::default()),
-                Span::styled(cat_name, Style::default().fg(cat_color)),
-            ]));
-            
-            if i < 7 { large_lines.push(Line::from("")); }
         }
 
-        let large_files_widget = Paragraph::new(large_lines)
+        let large_widget = Paragraph::new(large_lines)
             .block(Block::default()
-                .title(format!(" 📊 Largest Files ({}+ files >10MB) ", large_files.len()))
+                .title(format!(" 📊 Largest Files ({} files >10MB) ", large_files.len()))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
-        f.render_widget(large_files_widget, chunks[0]);
-
-        // Age analysis
-        let now = chrono::Local::now();
-        let old_files: Vec<_> = result.entries.iter()
-            .filter(|e| !e.is_dir)
-            .filter(|e| {
-                let age = now.signed_duration_since(e.modified).num_days();
-                age > 365  // Files older than 1 year
-            })
-            .collect();
-            
-        let very_old_files: Vec<_> = result.entries.iter()
-            .filter(|e| !e.is_dir)
-            .filter(|e| {
-                let age = now.signed_duration_since(e.modified).num_days();
-                age > 365 * 2  // Files older than 2 years
-            })
-            .collect();
-
-        let old_size: u64 = old_files.iter().map(|e| e.size).sum();
-        let very_old_size: u64 = very_old_files.iter().map(|e| e.size).sum();
-
-        let age_widget = Paragraph::new(vec![
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("📅 File Age Analysis", Style::default().fg(TEXT).bold()),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  Files >1 year old:", Style::default().fg(WARNING)),
-            ]),
-            Line::from(vec![
-                Span::styled("    Count:       ", Style::default().fg(MUTED)),
-                Span::styled(format!("{}", old_files.len()), Style::default().fg(WARNING)),
-            ]),
-            Line::from(vec![
-                Span::styled("    Size:        ", Style::default().fg(MUTED)),
-                Span::styled(humansize::format_size(old_size, humansize::DECIMAL), Style::default().fg(WARNING)),
-            ]),
-            Line::from(""),
-            Line::from(vec![
-                Span::styled("  Files >2 years old:", Style::default().fg(DANGER)),
-            ]),
-            Line::from(vec![
-                Span::styled("    Count:       ", Style::default().fg(MUTED)),
-                Span::styled(format!("{}", very_old_files.len()), Style::default().fg(DANGER)),
-            ]),
-            Line::from(vec![
-                Span::styled("    Size:        ", Style::default().fg(MUTED)),
-                Span::styled(humansize::format_size(very_old_size, humansize::DECIMAL), Style::default().fg(DANGER)),
-            ]),
-        ])
-        .block(Block::default()
-            .title(" 🕐 Age Analysis ")
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
-        f.render_widget(age_widget, chunks[1]);
+        f.render_widget(large_widget, area);
     }
 }
 
@@ -537,15 +398,15 @@ fn render_scan_details_actions(f: &mut Frame, _app: &App, area: Rect) {
     let actions = Paragraph::new(vec![
         Line::from(vec![
             Span::styled("Enter", Style::default().fg(ACCENT).bold()),
-            Span::styled(" Browse Files  ", Style::default().fg(MUTED)),
+            Span::styled(" Browse  ", Style::default().fg(MUTED)),
+            Span::styled("f", Style::default().fg(SUCCESS).bold()),
+            Span::styled(" All Files  ", Style::default().fg(MUTED)),
             Span::styled("c", Style::default().fg(SUCCESS).bold()),
             Span::styled(" Categories  ", Style::default().fg(MUTED)),
             Span::styled("s", Style::default().fg(SUCCESS).bold()),
             Span::styled(" Select Safe  ", Style::default().fg(MUTED)),
             Span::styled("Esc", Style::default().fg(WARNING).bold()),
             Span::styled(" Back  ", Style::default().fg(MUTED)),
-            Span::styled("h", Style::default().fg(ACCENT).bold()),
-            Span::styled(" Home  ", Style::default().fg(MUTED)),
             Span::styled("q", Style::default().fg(DANGER).bold()),
             Span::styled(" Quit", Style::default().fg(MUTED)),
         ]),
@@ -557,20 +418,7 @@ fn render_scan_details_actions(f: &mut Frame, _app: &App, area: Rect) {
     f.render_widget(actions, area);
 }
 
-fn render_stat_block(label: &str, value: &str, color: Color) -> Paragraph<'static> {
-    Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(label.to_string(), Style::default().fg(MUTED))),
-        Line::from(""),
-        Line::from(Span::styled(value.to_string(), Style::default().fg(color).bold())),
-    ])
-    .alignment(Alignment::Center)
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(45, 45, 60))))
-}
-
-/// Render the enhanced results view with better navigation
+/// Render the results browsing view
 pub fn render_results_view(f: &mut Frame, app: &mut App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
@@ -594,7 +442,6 @@ fn render_results_header(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(2), Constraint::Length(2)])
         .split(area);
 
-    // Title and summary stats
     let stats = if let Some(ref result) = app.scan_result {
         let marked_size: u64 = app.marked_for_deletion.iter()
             .filter_map(|&i| result.entries.get(i))
@@ -602,12 +449,10 @@ fn render_results_header(f: &mut Frame, app: &App, area: Rect) {
             .sum();
         
         format!(
-            "📄 {} files  📁 {} dirs  💾 {}  ◌ {} hidden  ⚙ {} system  │  ✓ {} selected ({})",
+            "📄 {} files  📁 {} dirs  💾 {}  │  ✓ {} selected ({})",
             result.total_files,
             result.total_dirs,
             humansize::format_size(result.total_size, humansize::DECIMAL),
-            result.hidden_count,
-            result.system_count,
             app.marked_for_deletion.len(),
             humansize::format_size(marked_size, humansize::DECIMAL)
         )
@@ -648,7 +493,6 @@ fn render_navigation_bar(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Length(30), Constraint::Min(10)])
         .split(area);
 
-    // View mode tabs
     let tab_titles = vec![" 📁 Files ", " 📊 Categories "];
     let selected_tab = match app.current_view {
         ViewMode::AllFiles => 0,
@@ -663,10 +507,9 @@ fn render_navigation_bar(f: &mut Frame, app: &App, area: Rect) {
     
     f.render_widget(tabs, chunks[0]);
 
-    // Breadcrumb
     let path_display = app.current_path.to_string_lossy();
-    let truncated = if path_display.len() > 60 {
-        format!("...{}", &path_display[path_display.len()-57..])
+    let truncated = if path_display.len() > 50 {
+        format!("...{}", &path_display[path_display.len()-47..])
     } else {
         path_display.to_string()
     };
@@ -693,7 +536,6 @@ fn render_main_content(f: &mut Frame, app: &mut App, area: Rect) {
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    // Left panel - file list, categories, or category detail
     if app.state == AppState::CategoryView {
         render_category_detail(f, app, chunks[0]);
     } else {
@@ -703,7 +545,6 @@ fn render_main_content(f: &mut Frame, app: &mut App, area: Rect) {
         }
     }
 
-    // Right panel - details and recommendations
     render_details_panel(f, app, chunks[1]);
 }
 
@@ -713,18 +554,15 @@ fn render_enhanced_file_list(f: &mut Frame, app: &mut App, area: Rect) {
     
     let items: Vec<ListItem> = current_entries
         .iter()
-        .enumerate()
-        .map(|(_visible_idx, (actual_idx, entry))| {
+        .map(|(actual_idx, entry)| {
             let category = Analyzer::categorize_file(entry);
             
-            // Selection marker with animation effect
             let marked = if app.marked_for_deletion.contains(actual_idx) {
                 Span::styled("● ", Style::default().fg(SUCCESS))
             } else {
                 Span::styled("○ ", Style::default().fg(Color::Rgb(55, 55, 75)))
             };
             
-            // File type icon
             let icon = if entry.is_system {
                 Span::styled("⚙ ", Style::default().fg(DANGER))
             } else if entry.is_hidden {
@@ -735,7 +573,6 @@ fn render_enhanced_file_list(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled("  ", Style::default())
             };
             
-            // Name styling
             let name_style = if entry.is_system {
                 Style::default().fg(DANGER).dim()
             } else if entry.is_dir {
@@ -756,7 +593,6 @@ fn render_enhanced_file_list(f: &mut Frame, app: &mut App, area: Rect) {
             let display_size = app.get_entry_display_size(entry);
             let size_str = humansize::format_size(display_size, humansize::DECIMAL);
             
-            // Safety indicator
             let safety = if category.is_safe_to_delete() {
                 Span::styled("✓", Style::default().fg(SUCCESS))
             } else if entry.is_system {
@@ -779,11 +615,11 @@ fn render_enhanced_file_list(f: &mut Frame, app: &mut App, area: Rect) {
 
     let hidden_text = if !app.show_hidden { " (hidden filtered)" } else { "" };
     let search_text = if !app.browse_search_query.is_empty() {
-        format!(" [Search: \"{}\"]", app.browse_search_query)
+        format!(" [🔍\"{}\"]", app.browse_search_query)
     } else {
         String::new()
     };
-    let sort_text = format!(" · Sort: {}", app.browse_sort_mode.name());
+    let sort_text = format!(" · {}", app.browse_sort_mode.name());
     
     let list = List::new(items)
         .block(Block::default()
@@ -807,7 +643,6 @@ fn render_enhanced_categories(f: &mut Frame, app: &mut App, area: Rect) {
         size_b.cmp(&size_a)
     });
 
-    // Calculate total for percentage
     let grand_total: u64 = categories.iter()
         .map(|(_, entries)| entries.iter().map(|e| e.size).sum::<u64>())
         .sum();
@@ -828,7 +663,6 @@ fn render_enhanced_categories(f: &mut Frame, app: &mut App, area: Rect) {
                 Span::styled("! ", Style::default().fg(WARNING))
             };
             
-            // Visual bar for size proportion
             let bar_width = (percentage as usize / 5).min(10);
             let bar = "█".repeat(bar_width) + &"░".repeat(10 - bar_width);
             
@@ -896,7 +730,7 @@ fn render_category_detail(f: &mut Frame, app: &App, area: Rect) {
                 .collect();
 
             let total_size: u64 = entries.iter().map(|e| e.size).sum();
-            let safe_text = if category.is_safe_to_delete() { "✓ Safe to delete" } else { "! Review items" };
+            let safe_text = if category.is_safe_to_delete() { "✓ Safe" } else { "! Review" };
             
             let list = List::new(items)
                 .block(Block::default()
@@ -914,25 +748,23 @@ fn render_category_detail(f: &mut Frame, app: &App, area: Rect) {
                 .highlight_style(Style::default().bg(Color::Rgb(50, 50, 70)));
 
             f.render_widget(list, area);
+            return;
         }
-    } else {
-        let empty = Paragraph::new("No category selected")
-            .style(Style::default().fg(MUTED))
-            .block(Block::default()
-                .title(" Category Detail ")
-                .borders(Borders::ALL)
-                .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
-        f.render_widget(empty, area);
     }
+    
+    let empty = Paragraph::new("No category selected")
+        .style(Style::default().fg(MUTED))
+        .block(Block::default()
+            .title(" Category Detail ")
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
+    f.render_widget(empty, area);
 }
 
 fn render_details_panel(f: &mut Frame, app: &App, area: Rect) {
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Percentage(50),  // Selected item details
-            Constraint::Percentage(50),  // Recommendations
-        ])
+        .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
     // Details section
@@ -966,7 +798,6 @@ fn render_details_panel(f: &mut Frame, app: &App, area: Rect) {
                 Line::from(""),
             ];
 
-            // Status indicators
             if entry.is_system {
                 lines.push(Line::from(Span::styled("⚠ System file - Protected", Style::default().fg(DANGER))));
             } else if is_safe {
@@ -975,7 +806,6 @@ fn render_details_panel(f: &mut Frame, app: &App, area: Rect) {
                 lines.push(Line::from(Span::styled("! Review before deleting", Style::default().fg(WARNING))));
             }
 
-            // Path info
             lines.push(Line::from(""));
             let path_str = entry.path.to_string_lossy();
             let path_display = if path_str.len() > 35 {
@@ -996,8 +826,8 @@ fn render_details_panel(f: &mut Frame, app: &App, area: Rect) {
         vec![
             Line::from(Span::styled("No file selected", Style::default().fg(MUTED))),
             Line::from(""),
-            Line::from(Span::styled("Use ↑↓ to navigate", Style::default().fg(TEXT_DIM))),
-            Line::from(Span::styled("Space to mark files", Style::default().fg(TEXT_DIM))),
+            Line::from(Span::styled("Use ↑↓ or mouse to navigate", Style::default().fg(TEXT_DIM))),
+            Line::from(Span::styled("Space or click to mark files", Style::default().fg(TEXT_DIM))),
             Line::from(Span::styled("Enter to open folders", Style::default().fg(TEXT_DIM))),
         ]
     };
@@ -1038,7 +868,6 @@ fn render_action_bar(f: &mut Frame, app: &App, area: Rect) {
         .constraints([Constraint::Percentage(60), Constraint::Percentage(40)])
         .split(area);
 
-    // Status message
     let status_style = match app.state {
         AppState::Confirmation | AppState::SystemWarning => Style::default().fg(DANGER),
         AppState::Deleting => Style::default().fg(WARNING),
@@ -1055,7 +884,6 @@ fn render_action_bar(f: &mut Frame, app: &App, area: Rect) {
     
     f.render_widget(status, chunks[0]);
 
-    // Key hints
     let hints = if app.state == AppState::Confirmation || app.state == AppState::SystemWarning {
         vec![
             Span::styled("Y", Style::default().fg(SUCCESS)),
@@ -1070,7 +898,9 @@ fn render_action_bar(f: &mut Frame, app: &App, area: Rect) {
             Span::styled("Space", Style::default().fg(ACCENT)),
             Span::styled(" Mark ", Style::default().fg(MUTED)),
             Span::styled("d", Style::default().fg(DANGER)),
-            Span::styled(" Delete ", Style::default().fg(MUTED)),
+            Span::styled(" Del ", Style::default().fg(MUTED)),
+            Span::styled("f", Style::default().fg(SUCCESS)),
+            Span::styled(" All ", Style::default().fg(MUTED)),
             Span::styled("v", Style::default().fg(ACCENT)),
             Span::styled(" View ", Style::default().fg(MUTED)),
             Span::styled("q", Style::default().fg(ACCENT)),
@@ -1085,164 +915,4 @@ fn render_action_bar(f: &mut Frame, app: &App, area: Rect) {
             .border_style(Style::default().fg(Color::Rgb(45, 45, 60))));
     
     f.render_widget(hints_widget, chunks[1]);
-}
-
-/// Render the enhanced help overlay
-pub fn render_help_overlay(f: &mut Frame, area: Rect) {
-    // Center the help modal
-    let modal_width = 55.min(area.width.saturating_sub(4));
-    let modal_height = 28.min(area.height.saturating_sub(2));
-    let modal_x = (area.width - modal_width) / 2;
-    let modal_y = (area.height - modal_height) / 2;
-    
-    let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
-    
-    f.render_widget(Clear, modal_area);
-
-    let help_text = vec![
-        Line::from(Span::styled("  NAVIGATION", Style::default().fg(ACCENT).bold())),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("    ↑ ↓ j k     ", Style::default().fg(TEXT)),
-            Span::styled("Move selection", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    → l Enter   ", Style::default().fg(TEXT)),
-            Span::styled("Enter folder / View category", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    ← Backspace ", Style::default().fg(TEXT)),
-            Span::styled("Go back", Style::default().fg(MUTED)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  SELECTION", Style::default().fg(SUCCESS).bold())),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("    Space       ", Style::default().fg(TEXT)),
-            Span::styled("Toggle mark for deletion", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    s           ", Style::default().fg(TEXT)),
-            Span::styled("Select all safe items", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    a           ", Style::default().fg(TEXT)),
-            Span::styled("Select all (except system)", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    c           ", Style::default().fg(TEXT)),
-            Span::styled("Clear all selections", Style::default().fg(MUTED)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  ACTIONS", Style::default().fg(DANGER).bold())),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("    d           ", Style::default().fg(TEXT)),
-            Span::styled("Delete selected items", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    v           ", Style::default().fg(TEXT)),
-            Span::styled("Toggle file/category view", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    .           ", Style::default().fg(TEXT)),
-            Span::styled("Toggle hidden files", Style::default().fg(MUTED)),
-        ]),
-        Line::from(""),
-        Line::from(Span::styled("  INDICATORS", Style::default().fg(WARNING).bold())),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("    ✓ ", Style::default().fg(SUCCESS)),
-            Span::styled("Safe to delete", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    ! ", Style::default().fg(WARNING)),
-            Span::styled("Review before deleting", Style::default().fg(MUTED)),
-        ]),
-        Line::from(vec![
-            Span::styled("    ⚙ ", Style::default().fg(DANGER)),
-            Span::styled("System file - protected", Style::default().fg(MUTED)),
-        ]),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("    Press ", Style::default().fg(MUTED)),
-            Span::styled("?", Style::default().fg(ACCENT)),
-            Span::styled(" or ", Style::default().fg(MUTED)),
-            Span::styled("Esc", Style::default().fg(ACCENT)),
-            Span::styled(" to close", Style::default().fg(MUTED)),
-        ]),
-    ];
-
-    let help = Paragraph::new(help_text)
-        .block(Block::default()
-            .title(Span::styled(" ⌨ Keyboard Shortcuts ", Style::default().fg(TEXT)))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(ACCENT))
-            .style(Style::default().bg(Color::Rgb(25, 25, 40))))
-        .wrap(Wrap { trim: true });
-    
-    f.render_widget(help, modal_area);
-}
-
-/// Render confirmation dialog
-pub fn render_confirmation_dialog(f: &mut Frame, message: &str, area: Rect) {
-    let modal_width = 50.min(area.width.saturating_sub(4));
-    let modal_height = 8;
-    let modal_x = (area.width - modal_width) / 2;
-    let modal_y = (area.height - modal_height) / 2;
-    
-    let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
-    
-    f.render_widget(Clear, modal_area);
-
-    let dialog = Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(message, Style::default().fg(TEXT))),
-        Line::from(""),
-        Line::from(""),
-        Line::from(vec![
-            Span::styled("    ", Style::default()),
-            Span::styled("[Y]", Style::default().fg(SUCCESS).bold()),
-            Span::styled(" Confirm    ", Style::default().fg(MUTED)),
-            Span::styled("[N]", Style::default().fg(DANGER).bold()),
-            Span::styled(" Cancel", Style::default().fg(MUTED)),
-        ]),
-    ])
-    .block(Block::default()
-        .title(Span::styled(" ⚠ Confirm Action ", Style::default().fg(WARNING)))
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(WARNING))
-        .style(Style::default().bg(Color::Rgb(30, 30, 45))))
-    .alignment(Alignment::Center)
-    .wrap(Wrap { trim: true });
-    
-    f.render_widget(dialog, modal_area);
-}
-
-/// Render system warning dialog
-pub fn render_system_warning_dialog(f: &mut Frame, message: &str, area: Rect) {
-    let modal_width = 60.min(area.width.saturating_sub(4));
-    let modal_height = 14;
-    let modal_x = (area.width - modal_width) / 2;
-    let modal_y = (area.height - modal_height) / 2;
-    
-    let modal_area = Rect::new(modal_x, modal_y, modal_width, modal_height);
-    
-    f.render_widget(Clear, modal_area);
-
-    let lines: Vec<Line> = message
-        .lines()
-        .map(|l| Line::from(Span::styled(l, Style::default().fg(TEXT))))
-        .collect();
-
-    let dialog = Paragraph::new(lines)
-        .block(Block::default()
-            .title(Span::styled(" 🛑 DANGER - System Files ", Style::default().fg(DANGER).bold()))
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(DANGER))
-            .style(Style::default().bg(Color::Rgb(40, 20, 20))))
-        .alignment(Alignment::Center)
-        .wrap(Wrap { trim: true });
-    
-    f.render_widget(dialog, modal_area);
 }

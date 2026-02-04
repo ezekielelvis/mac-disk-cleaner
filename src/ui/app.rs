@@ -3,9 +3,9 @@ use crate::cleaner::Cleaner;
 use crate::models::{FileEntry, ScanProgress, ScanResult};
 use crate::scanner::{Scanner, get_system_warning};
 use super::types::*;
-use super::render_home::{render_home, render_path_input};
-use super::render_scanning::render_scanning_enhanced;
-use super::render_results::{render_results_view, render_scan_complete, render_help_overlay, render_confirmation_dialog, render_system_warning_dialog};
+use super::screens::{render_home, render_scanning_enhanced, render_results_view, render_scan_complete, render_scan_details, AllFilesState};
+use super::components::{render_path_input, render_help_overlay, render_confirmation_dialog, render_system_warning_dialog};
+use super::handlers::{process_mouse_event, MouseResult};
 use anyhow::Result;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEventKind},
@@ -14,6 +14,7 @@ use crossterm::{
 };
 use ratatui::{
     backend::CrosstermBackend,
+    layout::Rect,
     widgets::{ListState, Clear},
     Frame, Terminal,
 };
@@ -22,6 +23,47 @@ use std::io;
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+
+/// Sort mode for browse view
+#[derive(Clone, Copy, PartialEq)]
+pub enum BrowseSortMode {
+    SizeDesc,
+    SizeAsc,
+    NameAsc,
+    NameDesc,
+    DateDesc,
+    DateAsc,
+}
+
+impl Default for BrowseSortMode {
+    fn default() -> Self {
+        BrowseSortMode::SizeDesc
+    }
+}
+
+impl BrowseSortMode {
+    pub fn name(&self) -> &'static str {
+        match self {
+            BrowseSortMode::SizeDesc => "Size ↓",
+            BrowseSortMode::SizeAsc => "Size ↑",
+            BrowseSortMode::NameAsc => "Name A-Z",
+            BrowseSortMode::NameDesc => "Name Z-A",
+            BrowseSortMode::DateDesc => "Date ↓",
+            BrowseSortMode::DateAsc => "Date ↑",
+        }
+    }
+    
+    pub fn cycle(&self) -> Self {
+        match self {
+            BrowseSortMode::SizeDesc => BrowseSortMode::SizeAsc,
+            BrowseSortMode::SizeAsc => BrowseSortMode::NameAsc,
+            BrowseSortMode::NameAsc => BrowseSortMode::NameDesc,
+            BrowseSortMode::NameDesc => BrowseSortMode::DateDesc,
+            BrowseSortMode::DateDesc => BrowseSortMode::DateAsc,
+            BrowseSortMode::DateAsc => BrowseSortMode::SizeDesc,
+        }
+    }
+}
 
 pub struct App {
     pub state: AppState,
@@ -49,6 +91,19 @@ pub struct App {
     pub path_cursor: usize,
     pub scan_scroll_offset: usize,
     pub frame_count: u32,
+    // New fields for All Files view
+    pub all_files_state: AllFilesState,
+    #[allow(dead_code)]
+    pub search_active: bool,
+    #[allow(dead_code)]
+    pub search_query: String,
+    // Layout areas for mouse click handling
+    #[allow(dead_code)]
+    pub last_list_area: Option<Rect>,
+    // Browse view sort and search
+    pub browse_sort_mode: BrowseSortMode,
+    pub browse_search_active: bool,
+    pub browse_search_query: String,
 }
 
 impl App {
@@ -83,12 +138,34 @@ impl App {
             path_cursor: 0,
             scan_scroll_offset: 0,
             frame_count: 0,
+            // Initialize new fields
+            all_files_state: AllFilesState::default(),
+            search_active: false,
+            search_query: String::new(),
+            last_list_area: None,
+            // Browse sort and search
+            browse_sort_mode: BrowseSortMode::default(),
+            browse_search_active: false,
+            browse_search_query: String::new(),
+        }
+    }
+    
+    /// Calculate the total size of a folder by summing all its descendants
+    pub fn calculate_folder_size(&self, folder_path: &std::path::Path) -> u64 {
+        if let Some(ref result) = self.scan_result {
+            result.entries
+                .iter()
+                .filter(|e| e.path.starts_with(folder_path) && e.path != folder_path)
+                .map(|e| e.size)
+                .sum()
+        } else {
+            0
         }
     }
 
     pub fn get_current_entries(&self) -> Vec<(usize, &FileEntry)> {
         if let Some(ref result) = self.scan_result {
-            result.entries
+            let mut entries: Vec<(usize, &FileEntry)> = result.entries
                 .iter()
                 .enumerate()
                 .filter(|(_, e)| {
@@ -100,9 +177,74 @@ impl App {
                     }
                 })
                 .filter(|(_, e)| self.show_hidden || !e.is_hidden)
-                .collect()
+                .filter(|(_, e)| {
+                    // Apply search filter
+                    if self.browse_search_query.is_empty() {
+                        true
+                    } else {
+                        e.name.to_lowercase().contains(&self.browse_search_query.to_lowercase())
+                    }
+                })
+                .collect();
+            
+            // Apply sorting based on mode
+            match self.browse_sort_mode {
+                BrowseSortMode::SizeDesc => {
+                    entries.sort_by(|a, b| {
+                        let size_a = if a.1.is_dir {
+                            self.calculate_folder_size(&a.1.path)
+                        } else {
+                            a.1.size
+                        };
+                        let size_b = if b.1.is_dir {
+                            self.calculate_folder_size(&b.1.path)
+                        } else {
+                            b.1.size
+                        };
+                        size_b.cmp(&size_a)
+                    });
+                }
+                BrowseSortMode::SizeAsc => {
+                    entries.sort_by(|a, b| {
+                        let size_a = if a.1.is_dir {
+                            self.calculate_folder_size(&a.1.path)
+                        } else {
+                            a.1.size
+                        };
+                        let size_b = if b.1.is_dir {
+                            self.calculate_folder_size(&b.1.path)
+                        } else {
+                            b.1.size
+                        };
+                        size_a.cmp(&size_b)
+                    });
+                }
+                BrowseSortMode::NameAsc => {
+                    entries.sort_by(|a, b| a.1.name.to_lowercase().cmp(&b.1.name.to_lowercase()));
+                }
+                BrowseSortMode::NameDesc => {
+                    entries.sort_by(|a, b| b.1.name.to_lowercase().cmp(&a.1.name.to_lowercase()));
+                }
+                BrowseSortMode::DateDesc => {
+                    entries.sort_by(|a, b| b.1.modified.cmp(&a.1.modified));
+                }
+                BrowseSortMode::DateAsc => {
+                    entries.sort_by(|a, b| a.1.modified.cmp(&b.1.modified));
+                }
+            }
+            
+            entries
         } else {
             Vec::new()
+        }
+    }
+    
+    /// Get entry size - for folders, calculate total size of contents
+    pub fn get_entry_display_size(&self, entry: &FileEntry) -> u64 {
+        if entry.is_dir {
+            self.calculate_folder_size(&entry.path)
+        } else {
+            entry.size
         }
     }
 
@@ -305,13 +447,13 @@ impl App {
         self.status_message = "Deleting...".to_string();
         
         if let Some(ref mut result) = self.scan_result {
-            let to_delete: Vec<(usize, std::path::PathBuf)> = self.marked_for_deletion.iter()
+            let to_delete: Vec<(usize, std::path::PathBuf, bool)> = self.marked_for_deletion.iter()
                 .filter_map(|&i| result.entries.get(i).map(|e| (i, e)))
                 .filter(|(_, e)| !e.is_system)
-                .map(|(i, e)| (i, e.path.clone()))
+                .map(|(i, e)| (i, e.path.clone(), e.is_dir))
                 .collect();
 
-            let paths: Vec<_> = to_delete.iter().map(|(_, p)| p.as_path()).collect();
+            let paths: Vec<_> = to_delete.iter().map(|(_, p, _)| p.as_path()).collect();
             
             if paths.is_empty() {
                 self.status_message = "No deletable items".to_string();
@@ -324,13 +466,28 @@ impl App {
                     let success_count = results.iter().filter(|(_, success)| *success).count();
                     let failed_count = results.len() - success_count;
                     
-                    let deleted_indices: Vec<usize> = results.iter()
+                    // Collect successfully deleted paths (including folders)
+                    let deleted_paths: Vec<std::path::PathBuf> = results.iter()
                         .zip(to_delete.iter())
                         .filter(|((_, success), _)| *success)
-                        .map(|(_, (idx, _))| *idx)
+                        .map(|(_, (_, path, _))| path.clone())
                         .collect();
                     
-                    let mut indices_to_remove: Vec<usize> = deleted_indices;
+                    // Find all entries that were deleted (including children of deleted folders)
+                    let mut indices_to_remove: Vec<usize> = Vec::new();
+                    for (idx, entry) in result.entries.iter().enumerate() {
+                        for deleted_path in &deleted_paths {
+                            // Remove if it's the deleted item OR if it's inside a deleted folder
+                            if entry.path == *deleted_path || entry.path.starts_with(deleted_path) {
+                                if !indices_to_remove.contains(&idx) {
+                                    indices_to_remove.push(idx);
+                                }
+                                break;
+                            }
+                        }
+                    }
+                    
+                    // Sort in reverse order to remove from end first
                     indices_to_remove.sort_by(|a, b| b.cmp(a));
                     
                     for idx in indices_to_remove {
@@ -355,8 +512,9 @@ impl App {
                     if result.entries.is_empty() {
                         self.list_state.select(None);
                     } else if let Some(selected) = self.list_state.selected() {
-                        if selected >= result.entries.len() {
-                            self.list_state.select(Some(result.entries.len().saturating_sub(1)));
+                        let current_entries_count = self.get_current_entries().len();
+                        if selected >= current_entries_count {
+                            self.list_state.select(Some(current_entries_count.saturating_sub(1)));
                         }
                     }
                     
@@ -469,7 +627,100 @@ async fn run_main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, ap
         
         // Handle events with timeout for animations
         if crossterm::event::poll(std::time::Duration::from_millis(50))? {
-            if let Event::Key(key) = event::read()? {
+            let event = event::read()?;
+            
+            // Handle mouse events
+            if let Event::Mouse(mouse_event) = event {
+                match process_mouse_event(mouse_event) {
+                    MouseResult::Click(_x, _y) => {
+                        // For now, clicks can be used to navigate - future improvement
+                        // We could track areas and detect which item was clicked
+                    }
+                    MouseResult::RightClick(_x, _y) => {
+                        // Right click could open context menu
+                    }
+                    MouseResult::ScrollUp => {
+                        match app.state {
+                            AppState::Home => {
+                                if app.home_menu.selected_option > 0 {
+                                    app.home_menu.selected_option -= 1;
+                                }
+                            }
+                            AppState::Viewing | AppState::ScanComplete => {
+                                let current = app.list_state.selected().unwrap_or(0);
+                                if current > 0 {
+                                    app.list_state.select(Some(current - 1));
+                                }
+                            }
+                            AppState::AllFiles => {
+                                let current = app.all_files_state.list_state.selected().unwrap_or(0);
+                                if current > 0 {
+                                    app.all_files_state.list_state.select(Some(current - 1));
+                                }
+                            }
+                            AppState::Scanning => {
+                                app.scan_scroll_offset = app.scan_scroll_offset.saturating_sub(1);
+                            }
+                            _ => {}
+                        }
+                    }
+                    MouseResult::ScrollDown => {
+                        match app.state {
+                            AppState::Home => {
+                                if app.home_menu.selected_option < app.home_menu.options.len() - 1 {
+                                    app.home_menu.selected_option += 1;
+                                }
+                            }
+                            AppState::Viewing | AppState::ScanComplete => {
+                                if let Some(result) = &app.scan_result {
+                                    let current = app.list_state.selected().unwrap_or(0);
+                                    if current < result.entries.len().saturating_sub(1) {
+                                        app.list_state.select(Some(current + 1));
+                                    }
+                                }
+                            }
+                            AppState::AllFiles => {
+                                if let Some(result) = &app.scan_result {
+                                    let current = app.all_files_state.list_state.selected().unwrap_or(0);
+                                    if current < result.entries.len().saturating_sub(1) {
+                                        app.all_files_state.list_state.select(Some(current + 1));
+                                    }
+                                }
+                            }
+                            AppState::Scanning => {
+                                let max_scroll = app.last_progress_snapshot.top_entries.len().saturating_sub(5);
+                                app.scan_scroll_offset = (app.scan_scroll_offset + 1).min(max_scroll);
+                            }
+                            _ => {}
+                        }
+                    }
+                    MouseResult::DoubleClick(_x, _y) => {
+                        // Double click to select or enter
+                        match app.state {
+                            AppState::Home => {
+                                // Start scan on double click
+                                let selected = &app.home_menu.options[app.home_menu.selected_option];
+                                if matches!(selected, ScanOption::CustomPath) && app.home_menu.custom_path.is_empty() {
+                                    app.state = AppState::PathInput;
+                                    app.path_input.clear();
+                                    app.update_path_suggestions();
+                                } else {
+                                    app.scan_path = app.get_scan_path_from_option();
+                                    app.current_path = app.scan_path.clone();
+                                    app.state = AppState::Scanning;
+                                    run_scan(terminal, app).await?;
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                    MouseResult::None => {}
+                }
+                continue;
+            }
+            
+            // Handle keyboard events
+            if let Event::Key(key) = event {
                 if key.kind != KeyEventKind::Press {
                     continue;
                 }
@@ -495,11 +746,20 @@ async fn run_main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, ap
                     AppState::ScanComplete => {
                         handle_scan_complete_input(app, key.code)?;
                     }
+                    AppState::ScanDetails => {
+                        handle_scan_details_input(app, key.code)?;
+                    }
                     AppState::SystemWarning => {
                         handle_system_warning_input(app, key.code);
                     }
                     AppState::Confirmation => {
                         handle_confirmation_input(app, key.code);
+                    }
+                    AppState::AllFiles => {
+                        handle_all_files_input(app, key.code)?;
+                    }
+                    AppState::Search => {
+                        handle_search_input(app, key.code);
                     }
                     _ => {
                         if handle_viewing_input(app, key.code)? {
@@ -661,6 +921,10 @@ fn handle_scan_complete_input(app: &mut App, key: KeyCode) -> Result<bool> {
             // Go to file browser view
             app.state = AppState::Viewing;
         }
+        KeyCode::Char('d') => {
+            // Go to detailed scan results view
+            app.state = AppState::ScanDetails;
+        }
         KeyCode::Char('s') => {
             // Select all safe items and go to view
             if let Some(ref result) = app.scan_result {
@@ -697,7 +961,88 @@ fn handle_scan_complete_input(app: &mut App, key: KeyCode) -> Result<bool> {
     Ok(false)
 }
 
+fn handle_scan_details_input(app: &mut App, key: KeyCode) -> Result<bool> {
+    match key {
+        KeyCode::Char('q') => return Ok(true),
+        KeyCode::Enter => {
+            // Go to file browser view
+            app.state = AppState::Viewing;
+        }
+        KeyCode::Char('c') => {
+            // Go to categories view
+            app.current_view = ViewMode::Categories;
+            app.state = AppState::Viewing;
+        }
+        KeyCode::Char('s') => {
+            // Select all safe items and go to view
+            if let Some(ref result) = app.scan_result {
+                app.marked_for_deletion = result.entries
+                    .iter()
+                    .enumerate()
+                    .filter(|(_, e)| {
+                        let cat = Analyzer::categorize_file(e);
+                        cat.is_safe_to_delete() && !e.is_system
+                    })
+                    .map(|(i, _)| i)
+                    .collect();
+                let size: u64 = app.marked_for_deletion.iter()
+                    .filter_map(|&i| result.entries.get(i))
+                    .map(|e| e.size)
+                    .sum();
+                app.status_message = format!(
+                    "✓ {} safe items selected · {}",
+                    app.marked_for_deletion.len(),
+                    humansize::format_size(size, humansize::DECIMAL)
+                );
+            }
+            app.state = AppState::Viewing;
+        }
+        KeyCode::Esc => {
+            // Go back to scan complete summary
+            app.state = AppState::ScanComplete;
+        }
+        KeyCode::Char('h') => {
+            // Go back to home
+            app.state = AppState::Home;
+            app.scan_result = None;
+            app.marked_for_deletion.clear();
+            app.navigation_stack.clear();
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
 fn handle_viewing_input(app: &mut App, key: KeyCode) -> Result<bool> {
+    // Handle browse search mode
+    if app.browse_search_active {
+        match key {
+            KeyCode::Esc => {
+                app.browse_search_active = false;
+                app.browse_search_query.clear();
+                app.status_message = "Search cancelled".to_string();
+            }
+            KeyCode::Enter => {
+                app.browse_search_active = false;
+                if app.browse_search_query.is_empty() {
+                    app.status_message = "Showing all files".to_string();
+                } else {
+                    let count = app.get_current_entries().len();
+                    app.status_message = format!("Found {} items matching \"{}\"", count, app.browse_search_query);
+                }
+                app.list_state.select(Some(0));
+            }
+            KeyCode::Backspace => {
+                app.browse_search_query.pop();
+            }
+            KeyCode::Char(c) => {
+                app.browse_search_query.push(c);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+    
     match key {
         KeyCode::Char('q') => return Ok(true),
         KeyCode::Down | KeyCode::Char('j') => app.next_item(),
@@ -723,17 +1068,31 @@ fn handle_viewing_input(app: &mut App, key: KeyCode) -> Result<bool> {
         KeyCode::Char('?') => app.show_help = !app.show_help,
         KeyCode::Char('v') => app.switch_view(),
         KeyCode::Char('.') => app.toggle_hidden(),
+        KeyCode::Char('/') => {
+            // Start search in browse view
+            app.browse_search_active = true;
+            app.browse_search_query.clear();
+            app.status_message = "Type to search... (Enter to confirm, Esc to cancel)".to_string();
+        }
+        KeyCode::Char('o') => {
+            // Cycle sort mode
+            app.browse_sort_mode = app.browse_sort_mode.cycle();
+            app.list_state.select(Some(0));
+            app.status_message = format!("Sort: {}", app.browse_sort_mode.name());
+        }
         KeyCode::Char('a') => {
             if app.current_view == ViewMode::AllFiles {
-                if let Some(ref result) = app.scan_result {
-                    app.marked_for_deletion = result.entries
-                        .iter()
-                        .enumerate()
-                        .filter(|(_, e)| !e.is_system)
-                        .map(|(i, _)| i)
-                        .collect();
-                    app.status_message = format!("{} items marked", app.marked_for_deletion.len());
-                }
+                // Select all visible items in current folder
+                let current_entries = app.get_current_entries();
+                let indices_to_add: Vec<usize> = current_entries
+                    .iter()
+                    .filter(|(actual_idx, entry)| {
+                        !entry.is_system && !app.marked_for_deletion.contains(actual_idx)
+                    })
+                    .map(|(actual_idx, _)| *actual_idx)
+                    .collect();
+                app.marked_for_deletion.extend(indices_to_add);
+                app.status_message = format!("{} items marked", app.marked_for_deletion.len());
             }
         }
         KeyCode::Char('s') => {
@@ -760,18 +1119,29 @@ fn handle_viewing_input(app: &mut App, key: KeyCode) -> Result<bool> {
         }
         KeyCode::Char('c') => {
             app.marked_for_deletion.clear();
-            app.status_message = "Selection cleared".to_string();
+            app.browse_search_query.clear();
+            app.status_message = "Selection and search cleared".to_string();
         }
-        KeyCode::Char('h') => {
+        KeyCode::Char('h') | KeyCode::Char('H') => {
             // Go back to home
             app.state = AppState::Home;
             app.scan_result = None;
             app.marked_for_deletion.clear();
             app.navigation_stack.clear();
+            app.browse_search_query.clear();
+        }
+        KeyCode::Char('F') => {
+            // Open All Files view
+            app.state = AppState::AllFiles;
+            app.all_files_state.list_state.select(Some(0));
         }
         KeyCode::Esc => {
             if app.show_help {
                 app.show_help = false;
+            } else if !app.browse_search_query.is_empty() {
+                app.browse_search_query.clear();
+                app.list_state.select(Some(0));
+                app.status_message = "Search cleared".to_string();
             } else if app.state == AppState::CategoryView {
                 app.state = AppState::Viewing;
                 app.selected_category = None;
@@ -782,6 +1152,149 @@ fn handle_viewing_input(app: &mut App, key: KeyCode) -> Result<bool> {
         _ => {}
     }
     Ok(false)
+}
+
+fn handle_all_files_input(app: &mut App, key: KeyCode) -> Result<bool> {
+    // Handle search mode
+    if app.all_files_state.search_active {
+        match key {
+            KeyCode::Esc => {
+                app.all_files_state.search_active = false;
+            }
+            KeyCode::Enter => {
+                app.all_files_state.search_active = false;
+            }
+            KeyCode::Backspace => {
+                app.all_files_state.search_query.pop();
+            }
+            KeyCode::Char(c) => {
+                app.all_files_state.search_query.push(c);
+            }
+            _ => {}
+        }
+        return Ok(false);
+    }
+    
+    match key {
+        KeyCode::Char('q') | KeyCode::Esc => {
+            app.state = AppState::Viewing;
+        }
+        KeyCode::Down | KeyCode::Char('j') => {
+            if let Some(result) = &app.scan_result {
+                let filtered_entries = super::screens::all_files::get_filtered_entries(&result.entries, &app.all_files_state, &app.marked_for_deletion);
+                let current = app.all_files_state.list_state.selected().unwrap_or(0);
+                if current < filtered_entries.len().saturating_sub(1) {
+                    app.all_files_state.list_state.select(Some(current + 1));
+                }
+            }
+        }
+        KeyCode::Up | KeyCode::Char('k') => {
+            let current = app.all_files_state.list_state.selected().unwrap_or(0);
+            if current > 0 {
+                app.all_files_state.list_state.select(Some(current - 1));
+            }
+        }
+        KeyCode::PageDown => {
+            if let Some(result) = &app.scan_result {
+                let filtered_entries = super::screens::all_files::get_filtered_entries(&result.entries, &app.all_files_state, &app.marked_for_deletion);
+                let current = app.all_files_state.list_state.selected().unwrap_or(0);
+                let new_idx = (current + 10).min(filtered_entries.len().saturating_sub(1));
+                app.all_files_state.list_state.select(Some(new_idx));
+            }
+        }
+        KeyCode::PageUp => {
+            let current = app.all_files_state.list_state.selected().unwrap_or(0);
+            let new_idx = current.saturating_sub(10);
+            app.all_files_state.list_state.select(Some(new_idx));
+        }
+        KeyCode::Home => {
+            app.all_files_state.list_state.select(Some(0));
+        }
+        KeyCode::End => {
+            if let Some(result) = &app.scan_result {
+                let filtered_entries = super::screens::all_files::get_filtered_entries(&result.entries, &app.all_files_state, &app.marked_for_deletion);
+                app.all_files_state.list_state.select(Some(filtered_entries.len().saturating_sub(1)));
+            }
+        }
+        KeyCode::Char(' ') => {
+            // Toggle selection for current item
+            if let Some(result) = &app.scan_result {
+                let filtered_entries = super::screens::all_files::get_filtered_entries(&result.entries, &app.all_files_state, &app.marked_for_deletion);
+                if let Some(selected) = app.all_files_state.list_state.selected() {
+                    if let Some((original_idx, _)) = filtered_entries.get(selected) {
+                        let original_idx = *original_idx;
+                        // Toggle selection in marked_for_deletion
+                        if app.marked_for_deletion.contains(&original_idx) {
+                            app.marked_for_deletion.retain(|&x| x != original_idx);
+                        } else {
+                            app.marked_for_deletion.push(original_idx);
+                        }
+                    }
+                }
+            }
+        }
+        KeyCode::Char('d') => {
+            // Delete selected files
+            if !app.marked_for_deletion.is_empty() {
+                app.delete_marked();
+            }
+        }
+        KeyCode::Char('s') | KeyCode::Char('o') => {
+            // Cycle sort mode
+            app.all_files_state.cycle_sort();
+            app.all_files_state.list_state.select(Some(0));
+        }
+        KeyCode::Char('t') => {
+            // Cycle filter mode
+            app.all_files_state.cycle_filter();
+            app.all_files_state.list_state.select(Some(0));
+        }
+        KeyCode::Char('/') => {
+            // Start search
+            app.all_files_state.search_active = true;
+            app.all_files_state.search_query.clear();
+        }
+        KeyCode::Char('a') => {
+            // Select all visible
+            if let Some(result) = &app.scan_result {
+                let filtered_entries = super::screens::all_files::get_filtered_entries(&result.entries, &app.all_files_state, &app.marked_for_deletion);
+                for (original_idx, entry) in filtered_entries {
+                    if !entry.is_system && !app.marked_for_deletion.contains(&original_idx) {
+                        app.marked_for_deletion.push(original_idx);
+                    }
+                }
+            }
+        }
+        KeyCode::Char('c') => {
+            // Clear selection
+            app.marked_for_deletion.clear();
+        }
+        KeyCode::Char('?') => {
+            app.show_help = !app.show_help;
+        }
+        _ => {}
+    }
+    Ok(false)
+}
+
+fn handle_search_input(app: &mut App, key: KeyCode) {
+    match key {
+        KeyCode::Esc => {
+            app.state = AppState::AllFiles;
+            app.all_files_state.search_active = false;
+        }
+        KeyCode::Enter => {
+            app.state = AppState::AllFiles;
+            app.all_files_state.search_active = false;
+        }
+        KeyCode::Backspace => {
+            app.all_files_state.search_query.pop();
+        }
+        KeyCode::Char(c) => {
+            app.all_files_state.search_query.push(c);
+        }
+        _ => {}
+    }
 }
 
 async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &mut App) -> Result<()> {
@@ -810,6 +1323,13 @@ async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &m
         // Update progress snapshot
         if app.frame_count % 3 == 0 {
             if let Ok(prog) = app.scan_progress.try_lock() {
+                // Calculate category sizes from current entries
+                let mut category_sizes: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
+                for entry in &prog.entries {
+                    let cat = Analyzer::categorize_file(entry).as_str().to_string();
+                    *category_sizes.entry(cat).or_insert(0) += entry.size;
+                }
+                
                 app.last_progress_snapshot = ScanProgressSnapshot {
                     current_path: prog.current_path.clone(),
                     files_scanned: prog.files_scanned,
@@ -821,6 +1341,7 @@ async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &m
                         .take(50)
                         .map(|e| (e.name.clone(), e.size, Analyzer::categorize_file(e).as_str().to_string()))
                         .collect(),
+                    category_sizes,
                 };
                 
                 if prog.is_complete {
@@ -884,7 +1405,7 @@ async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app: &m
             );
             
             app.scan_result = Some(result);
-            app.state = AppState::ScanComplete;  // Show summary first
+            app.state = AppState::Viewing;  // Go directly to browse view
             app.list_state.select(Some(0));
             app.category_state.select(Some(0));
         }
@@ -918,6 +1439,9 @@ fn render_ui(f: &mut Frame, app: &mut App) {
         AppState::ScanComplete => {
             render_scan_complete(f, app, f.area());
         }
+        AppState::ScanDetails => {
+            render_scan_details(f, app, f.area());
+        }
         AppState::SystemWarning => {
             render_results_view(f, app, f.area());
             render_system_warning_dialog(f, &app.system_warning_message, f.area());
@@ -925,6 +1449,12 @@ fn render_ui(f: &mut Frame, app: &mut App) {
         AppState::Confirmation => {
             render_results_view(f, app, f.area());
             render_confirmation_dialog(f, &app.status_message, f.area());
+        }
+        AppState::AllFiles | AppState::Search => {
+            super::screens::all_files::render_all_files_screen(f, app, f.area());
+            if app.show_help {
+                render_help_overlay(f, f.area());
+            }
         }
         _ => {
             render_results_view(f, app, f.area());

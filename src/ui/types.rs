@@ -1,14 +1,20 @@
+use std::collections::HashMap;
+
 #[derive(PartialEq, Clone)]
+#[allow(dead_code)]
 pub enum AppState {
     Home,           // New home screen with options
     PathInput,      // Custom path input mode
     Scanning,
     ScanComplete,   // Summary screen after scan with quick actions
+    ScanDetails,    // Detailed scan results with comprehensive stats
     Viewing,
     CategoryView,
     Deleting,
     Confirmation,
     SystemWarning,
+    AllFiles,       // New: Dedicated all files view
+    Search,         // New: Search mode
 }
 
 #[derive(PartialEq, Clone)]
@@ -75,6 +81,7 @@ pub struct ScanProgressSnapshot {
     pub total_size_scanned: u64,
     pub entries_count: usize,
     pub top_entries: Vec<(String, u64, String)>,  // (name, size, category)
+    pub category_sizes: HashMap<String, u64>,  // category name -> total size
 }
 
 #[derive(Clone, Default)]
