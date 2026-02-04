@@ -1,6 +1,9 @@
 #[derive(PartialEq, Clone)]
 pub enum AppState {
+    Home,           // New home screen with options
+    PathInput,      // Custom path input mode
     Scanning,
+    ScanComplete,   // Summary screen after scan with quick actions
     Viewing,
     CategoryView,
     Deleting,
@@ -12,6 +15,56 @@ pub enum AppState {
 pub enum ViewMode {
     AllFiles,
     Categories,
+}
+
+#[derive(PartialEq, Clone)]
+pub enum ScanOption {
+    FullDisk,
+    HomeDirectory,
+    CustomPath,
+    QuickScan,
+    LargeFiles,
+    OldFiles,
+}
+
+impl Default for ScanOption {
+    fn default() -> Self {
+        ScanOption::HomeDirectory
+    }
+}
+
+#[derive(Clone)]
+pub struct HomeMenuState {
+    pub options: Vec<ScanOption>,
+    pub selected_option: usize,
+    pub custom_path: String,
+    pub path_suggestions: Vec<String>,
+    pub min_size_mb: u64,
+    pub max_depth: usize,
+    pub include_hidden: bool,
+    pub storage_info: StorageInfo,
+}
+
+impl Default for HomeMenuState {
+    fn default() -> Self {
+        Self {
+            options: vec![
+                ScanOption::FullDisk,
+                ScanOption::HomeDirectory,
+                ScanOption::CustomPath,
+                ScanOption::QuickScan,
+                ScanOption::LargeFiles,
+                ScanOption::OldFiles,
+            ],
+            selected_option: 1,  // Default to Home Directory
+            custom_path: String::new(),
+            path_suggestions: Vec::new(),
+            min_size_mb: 1,
+            max_depth: 0,
+            include_hidden: true,
+            storage_info: StorageInfo::default(),
+        }
+    }
 }
 
 #[derive(Clone, Default)]

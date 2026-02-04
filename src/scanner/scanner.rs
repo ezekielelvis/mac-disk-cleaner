@@ -1,21 +1,54 @@
 use anyhow::Result;
 use crate::models::{FileEntry, ScanResult, ScanProgress};
-use super::utils::{is_system_path, is_hidden_path, should_skip_path};
-use super::fs_ops::*;
-use super::dir_calculator::DirectorySizeCalculator;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
-use std::collections::VecDeque;
+use std::collections::{VecDeque, HashSet};
 use tokio::sync::Mutex;
+use chrono::{DateTime, Local};
+
+#[cfg(unix)]
+use std::os::unix::fs::MetadataExt;
 
 /// Number of parallel worker threads for scanning
 const NUM_WORKERS: usize = 4;
 
+/// Paths to skip to avoid double-counting or hanging
+/// On macOS with APFS, the same files can appear under multiple mount points
+const VIRTUAL_PATHS: &[&str] = &[
+    "/dev",           // Device files - not real disk usage
+    "/proc",          // Process info (Linux)
+    "/sys",           // Kernel info (Linux)
+    "/.vol",          // macOS volume references (can cause loops)
+    "/private/var/vm", // macOS virtual memory - swap files
+];
+
+/// Additional paths to skip when scanning root (/) to prevent double-counting
+/// These are mount points or firmlinks that would cause files to be counted twice
+const ROOT_SKIP_PATHS: &[&str] = &[
+    "/Volumes",       // External drives, network mounts, Time Machine
+    "/System/Volumes/Data", // APFS Data volume (firmlinked to root dirs)
+    "/System/Volumes/Preboot",
+    "/System/Volumes/Recovery", 
+    "/System/Volumes/VM",
+    "/System/Volumes/Update",
+    "/System/Volumes/Hardware",  
+    "/System/Volumes/xarts",
+    "/System/Volumes/iSCPreboot",
+    "/System/Volumes/Preboot",
+    "/private/var/folders", // User temp - often duplicated
+    "/.Spotlight-V100",  // Spotlight index
+    "/.fseventsd",       // Filesystem events
+    "/.DocumentRevisions-V100", // Document versions
+    // "/System/Library/Caches", // System caches - protected
+    // "/.Trashes",         // Trash on other volumes
+    "/Network",          // Network mounts
+];
+
 pub struct Scanner {
     min_size_bytes: u64,
     #[allow(dead_code)]
-    max_depth: usize,  // Kept for API compatibility but not used
+    max_depth: usize,
 }
 
 impl Scanner {
@@ -26,7 +59,70 @@ impl Scanner {
         }
     }
 
-    /// Full unrestricted scan - scans everything until complete
+    /// Check if path should be skipped (virtual or duplicate mount point)
+    #[inline(always)]
+    fn should_skip_path(path: &Path, is_full_disk: bool) -> bool {
+        let path_str = path.to_string_lossy();
+        
+        // Always skip virtual paths
+        for vp in VIRTUAL_PATHS {
+            if path_str.as_ref() == *vp || path_str.starts_with(&format!("{}/", vp)) {
+                return true;
+            }
+        }
+        
+        // Skip additional paths when doing full disk or home dir scan
+        if is_full_disk {
+            for skip in ROOT_SKIP_PATHS {
+                if path_str.as_ref() == *skip || path_str.starts_with(&format!("{}/", skip)) {
+                    return true;
+                }
+            }
+        }
+        
+        false
+    }
+    
+    /// Check if path crosses to a different filesystem (different device)
+    #[cfg(unix)]
+    #[inline(always)]
+    fn is_different_filesystem(path: &Path, root_device: Option<u64>) -> bool {
+        if let Some(root_dev) = root_device {
+            if let Ok(metadata) = std::fs::metadata(path) {
+                return metadata.dev() != root_dev;
+            }
+        }
+        false
+    }
+    
+    #[cfg(not(unix))]
+    #[inline(always)]
+    fn is_different_filesystem(_path: &Path, _root_device: Option<u64>) -> bool {
+        false
+    }
+
+    #[inline(always)]
+    fn is_hidden_path(path: &Path) -> bool {
+        path.file_name()
+            .and_then(|n| n.to_str())
+            .map(|n| n.starts_with('.'))
+            .unwrap_or(false)
+    }
+
+    #[inline(always)]
+    fn is_system_path(path: &Path) -> bool {
+        let path_str = path.to_string_lossy();
+        
+        path_str.starts_with("/System") ||
+        path_str.starts_with("/usr") ||
+        path_str.starts_with("/bin") ||
+        path_str.starts_with("/sbin") ||
+        path_str.contains("/Library/Keychains") ||
+        path_str.contains("/.ssh") ||
+        path_str.contains("/.gnupg")
+    }
+
+    /// Full scan - scans EVERYTHING, tracks inodes to avoid double-counting hard links
     pub async fn scan_with_progress(
         &self,
         path: &Path,
@@ -35,6 +131,17 @@ impl Scanner {
         let min_size = self.min_size_bytes;
         let root = path.to_path_buf();
         
+        // Determine if this is a full disk scan and get root device ID
+        let path_str = path.to_string_lossy();
+        let is_full_disk = path_str == "/" || path_str == "/Users" || path_str.starts_with("/Users/");
+        
+        #[cfg(unix)]
+        let root_device_id = std::fs::metadata(path)
+            .ok()
+            .map(|m| m.dev());
+        #[cfg(not(unix))]
+        let root_device_id: Option<u64> = None;
+        
         // Atomic counters
         let files_count = Arc::new(AtomicUsize::new(0));
         let dirs_count = Arc::new(AtomicUsize::new(0));
@@ -42,7 +149,7 @@ impl Scanner {
         let is_complete = Arc::new(AtomicBool::new(false));
         let scan_started = Arc::new(AtomicBool::new(false));
         
-        let entries = Arc::new(Mutex::new(Vec::<FileEntry>::with_capacity(10000)));
+        let entries = Arc::new(Mutex::new(Vec::<FileEntry>::with_capacity(50000)));
         let current_path = Arc::new(Mutex::new(String::new()));
         
         // Progress updater task
@@ -57,7 +164,6 @@ impl Scanner {
         
         let progress_task = tokio::spawn(async move {
             loop {
-                // Wait for scan to start before checking completion
                 if !scan_started_c.load(Ordering::Acquire) {
                     tokio::time::sleep(tokio::time::Duration::from_millis(50)).await;
                     continue;
@@ -69,18 +175,15 @@ impl Scanner {
                 
                 tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
                 
-                // Use blocking lock to ensure we don't lose updates
                 let mut prog = progress_c.lock().await;
                 prog.files_scanned = files_count_c.load(Ordering::Relaxed);
                 prog.dirs_scanned = dirs_count_c.load(Ordering::Relaxed);
                 prog.total_size_scanned = total_size_c.load(Ordering::Relaxed);
                 
-                // Try to get current path without blocking too long
                 if let Ok(cp) = current_path_c.try_lock() {
                     prog.current_path = cp.clone();
                 }
                 
-                // Try to get top entries without blocking too long
                 if let Ok(ents) = entries_c.try_lock() {
                     let top: Vec<_> = ents.iter()
                         .filter(|e| !e.is_dir)
@@ -92,7 +195,7 @@ impl Scanner {
             }
         });
 
-        // Main scan in blocking thread
+        // Main scan
         let entries_main = entries.clone();
         let current_path_main = current_path.clone();
         let files_count_main = files_count.clone();
@@ -101,12 +204,13 @@ impl Scanner {
         let scan_started_main = scan_started.clone();
         
         let scan_result = tokio::task::spawn_blocking(move || -> Result<()> {
-            // Mark scan as started
             scan_started_main.store(true, Ordering::Release);
             
             Self::scan_all(
                 &root,
                 min_size,
+                is_full_disk,
+                root_device_id,
                 &entries_main,
                 &current_path_main,
                 &files_count_main,
@@ -117,11 +221,8 @@ impl Scanner {
             Ok(())
         }).await;
         
-        // Check for scan errors
         match scan_result {
-            Ok(Ok(())) => {
-                // Scan completed successfully
-            }
+            Ok(Ok(())) => {}
             Ok(Err(e)) => {
                 is_complete.store(true, Ordering::Release);
                 let _ = progress_task.await;
@@ -134,11 +235,9 @@ impl Scanner {
             }
         }
         
-        // Mark as complete and wait for progress task
         is_complete.store(true, Ordering::Release);
         let _ = progress_task.await;
         
-        // Get final results with blocking lock
         let mut final_entries = entries.lock().await.clone();
         final_entries.sort_unstable_by(|a, b| b.size.cmp(&a.size));
         
@@ -146,11 +245,9 @@ impl Scanner {
         let total_dirs = dirs_count.load(Ordering::Relaxed);
         let total_sz = total_size.load(Ordering::Relaxed);
         
-        // Count hidden and system files
         let hidden_count = final_entries.iter().filter(|e| e.is_hidden).count();
         let system_count = final_entries.iter().filter(|e| e.is_system).count();
         
-        // Update final progress
         {
             let mut prog = progress.lock().await;
             prog.is_complete = true;
@@ -170,10 +267,12 @@ impl Scanner {
         })
     }
 
-    /// Scan everything using parallel workers - no depth limit
+    /// Scan everything using parallel workers with inode tracking
     fn scan_all(
         root: &Path,
         min_size: u64,
+        is_full_disk: bool,
+        root_device_id: Option<u64>,
         entries: &Arc<Mutex<Vec<FileEntry>>>,
         current_path: &Arc<Mutex<String>>,
         files_count: &Arc<AtomicUsize>,
@@ -183,64 +282,36 @@ impl Scanner {
         use std::sync::mpsc;
         use std::thread;
         
-        // Shared work queue for parallel scanning
-        let work_queue = Arc::new(std::sync::Mutex::new(VecDeque::<PathBuf>::with_capacity(50000)));
+        // Work queue
+        let work_queue = Arc::new(std::sync::Mutex::new(VecDeque::<PathBuf>::with_capacity(100000)));
         let active_workers = Arc::new(AtomicUsize::new(0));
         let scan_complete = Arc::new(AtomicBool::new(false));
         
-        // Shared counters for logging
-        let skipped_dirs = Arc::new(AtomicUsize::new(0));
-        let skipped_virtual = Arc::new(AtomicUsize::new(0));
-        let error_count = Arc::new(AtomicUsize::new(0));
-        let skipped_bytes = Arc::new(AtomicU64::new(0));
+        // Track seen inodes to avoid counting hard links multiple times
+        let seen_inodes = Arc::new(std::sync::Mutex::new(HashSet::<u64>::with_capacity(500000)));
         
-        // Channel for collecting entries from workers
+        // Share scan settings with workers
+        let is_full_disk_shared = Arc::new(is_full_disk);
+        let root_device_shared = Arc::new(root_device_id);
+        
+        // Counters for logging
+        let skipped_permission = Arc::new(AtomicUsize::new(0));
+        let skipped_virtual = Arc::new(AtomicUsize::new(0));
+        let skipped_different_fs = Arc::new(AtomicUsize::new(0));
+        let hardlink_deduped = Arc::new(AtomicUsize::new(0));
+        
         let (entry_tx, entry_rx) = mpsc::channel::<Vec<FileEntry>>();
         
-        // Initialize work queue with starting directories
+        // Initialize queue
         {
             let mut queue = work_queue.lock().unwrap();
-            
-            if root == Path::new("/") {
-                // For root scan, add top-level directories in priority order
-                let priority_paths = [
-                    "/Users",
-                    "/Applications", 
-                    "/Library",
-                    "/System",
-                    "/private",
-                    "/opt",
-                    "/usr",
-                ];
-                
-                for path in priority_paths {
-                    let p = PathBuf::from(path);
-                    if p.exists() && !should_skip_path(&p) {
-                        queue.push_back(p);
-                    }
-                }
-                
-                // Add remaining top-level directories
-                if let Some(entries_in_root) = try_read_directory(root) {
-                    for entry in entries_in_root {
-                        let path = entry.path();
-                        if path.is_dir() && !should_skip_path(&path) {
-                            let path_str = path.to_string_lossy();
-                            if !priority_paths.iter().any(|p| path_str == *p) {
-                                queue.push_back(path);
-                            }
-                        }
-                    }
-                }
-            } else {
-                queue.push_back(root.to_path_buf());
-            }
+            queue.push_back(root.to_path_buf());
         }
         
-        // Spawn worker threads
+        // Spawn workers
         let mut handles = Vec::with_capacity(NUM_WORKERS);
         
-        for worker_id in 0..NUM_WORKERS {
+        for _worker_id in 0..NUM_WORKERS {
             let queue = work_queue.clone();
             let active = active_workers.clone();
             let complete = scan_complete.clone();
@@ -249,17 +320,19 @@ impl Scanner {
             let files_count = files_count.clone();
             let dirs_count = dirs_count.clone();
             let total_size = total_size.clone();
-            let skipped_dirs = skipped_dirs.clone();
+            let seen_inodes = seen_inodes.clone();
+            let skipped_permission = skipped_permission.clone();
             let skipped_virtual = skipped_virtual.clone();
-            let error_count = error_count.clone();
-            let skipped_bytes = skipped_bytes.clone();
+            let skipped_different_fs = skipped_different_fs.clone();
+            let hardlink_deduped = hardlink_deduped.clone();
+            let is_full_disk_w = is_full_disk_shared.clone();
+            let root_device_w = root_device_shared.clone();
             
             let handle = thread::spawn(move || {
-                let mut local_entries = Vec::with_capacity(500);
+                let mut local_entries = Vec::with_capacity(1000);
                 let mut update_counter = 0u32;
                 
                 loop {
-                    // Try to get work
                     let dir_path = {
                         let mut q = queue.lock().unwrap();
                         q.pop_front()
@@ -269,42 +342,39 @@ impl Scanner {
                         Some(path) => {
                             active.fetch_add(1, Ordering::SeqCst);
                             
-                            // Process this directory
                             Self::process_directory(
                                 &path,
                                 min_size,
+                                *is_full_disk_w,
+                                *root_device_w,
                                 &queue,
                                 &mut local_entries,
                                 &current_path,
                                 &files_count,
                                 &dirs_count,
                                 &total_size,
-                                &skipped_dirs,
+                                &seen_inodes,
+                                &skipped_permission,
                                 &skipped_virtual,
-                                &error_count,
-                                &skipped_bytes,
+                                &skipped_different_fs,
+                                &hardlink_deduped,
                                 &mut update_counter,
-                                worker_id,
                             );
                             
-                            // Flush entries periodically
-                            if local_entries.len() >= 500 {
+                            if local_entries.len() >= 1000 {
                                 let _ = tx.send(std::mem::take(&mut local_entries));
-                                local_entries = Vec::with_capacity(500);
+                                local_entries = Vec::with_capacity(1000);
                             }
                             
                             active.fetch_sub(1, Ordering::SeqCst);
                         }
                         None => {
-                            // No work available - check if we should exit
                             if active.load(Ordering::SeqCst) == 0 {
-                                // Double-check the queue is really empty
                                 let q = queue.lock().unwrap();
                                 if q.is_empty() {
                                     break;
                                 }
                             }
-                            // Small sleep to avoid busy-waiting
                             thread::sleep(std::time::Duration::from_micros(100));
                         }
                     }
@@ -314,7 +384,6 @@ impl Scanner {
                     }
                 }
                 
-                // Final flush of any remaining entries
                 if !local_entries.is_empty() {
                     let _ = tx.send(local_entries);
                 }
@@ -323,11 +392,9 @@ impl Scanner {
             handles.push(handle);
         }
         
-        // Drop our sender so the receiver knows when all workers are done
         drop(entry_tx);
         
-        // Collect all entries from workers
-        let dir_calculator = DirectorySizeCalculator::new();
+        // Collect entries
         let runtime = tokio::runtime::Handle::try_current();
         
         for batch in entry_rx {
@@ -347,128 +414,158 @@ impl Scanner {
             }
         }
         
-        // Wait for all workers to complete
         for handle in handles {
             let _ = handle.join();
         }
         
         scan_complete.store(true, Ordering::Relaxed);
         
-        // Calculate recursive directory sizes
-        if let Ok(handle) = runtime {
-            handle.block_on(async {
-                let mut ents = entries.lock().await;
-                dir_calculator.calculate_recursive_sizes(&mut ents);
-            });
-        }
-        
         // Final status
         let total_scanned = total_size.load(Ordering::Relaxed);
-        let skipped_d = skipped_dirs.load(Ordering::Relaxed);
-        let skipped_v = skipped_virtual.load(Ordering::Relaxed);
-        let errors = error_count.load(Ordering::Relaxed);
-        let skipped_b = skipped_bytes.load(Ordering::Relaxed);
+        let perm = skipped_permission.load(Ordering::Relaxed);
+        let virt = skipped_virtual.load(Ordering::Relaxed);
+        let diff_fs = skipped_different_fs.load(Ordering::Relaxed);
+        let deduped = hardlink_deduped.load(Ordering::Relaxed);
         
-        if skipped_d > 0 || errors > 0 || skipped_v > 0 {
-            eprintln!("✓ Scan completed ({} workers):", NUM_WORKERS);
-            eprintln!("  • Scanned: {}", humansize::format_size(total_scanned, humansize::DECIMAL));
-            if skipped_b > 0 {
-                eprintln!("  • Inaccessible (estimated): {}", humansize::format_size(skipped_b, humansize::DECIMAL));
-                eprintln!("  • Total (estimated): {}", humansize::format_size(total_scanned + skipped_b, humansize::DECIMAL));
-            }
-            eprintln!("  • Skipped {} inaccessible, {} virtual paths, {} errors", skipped_d, skipped_v, errors);
+        eprintln!("✓ Scan completed:");
+        eprintln!("  • Total size: {}", humansize::format_size(total_scanned, humansize::DECIMAL));
+        eprintln!("  • Files: {}, Dirs: {}", files_count.load(Ordering::Relaxed), dirs_count.load(Ordering::Relaxed));
+        if perm > 0 {
+            eprintln!("  • Permission denied: {} paths", perm);
+        }
+        if virt > 0 {
+            eprintln!("  • Virtual/mount paths skipped: {}", virt);
+        }
+        if diff_fs > 0 {
+            eprintln!("  • Different filesystem skipped: {}", diff_fs);
+        }
+        if deduped > 0 {
+            eprintln!("  • Hard links deduplicated: {}", deduped);
         }
     }
     
-    /// Process a single directory - called by worker threads
+    /// Process a single directory
     fn process_directory(
         dir_path: &Path,
         min_size: u64,
+        is_full_disk: bool,
+        root_device_id: Option<u64>,
         work_queue: &Arc<std::sync::Mutex<VecDeque<PathBuf>>>,
         local_entries: &mut Vec<FileEntry>,
         current_path: &Arc<Mutex<String>>,
         files_count: &Arc<AtomicUsize>,
         dirs_count: &Arc<AtomicUsize>,
         total_size: &Arc<AtomicU64>,
-        skipped_dirs: &Arc<AtomicUsize>,
+        seen_inodes: &Arc<std::sync::Mutex<HashSet<u64>>>,
+        skipped_permission: &Arc<AtomicUsize>,
         skipped_virtual: &Arc<AtomicUsize>,
-        error_count: &Arc<AtomicUsize>,
-        skipped_bytes: &Arc<AtomicU64>,
+        skipped_different_fs: &Arc<AtomicUsize>,
+        hardlink_deduped: &Arc<AtomicUsize>,
         update_counter: &mut u32,
-        _worker_id: usize,
     ) {
-        // Skip virtual filesystems
-        if should_skip_path(dir_path) {
+        // Skip virtual paths and mount points that would cause double-counting
+        if Self::should_skip_path(dir_path, is_full_disk) {
             skipped_virtual.fetch_add(1, Ordering::Relaxed);
             return;
         }
         
-        // Update current path periodically
+        // Skip paths on different filesystems to avoid counting mounted volumes
+        if Self::is_different_filesystem(dir_path, root_device_id) {
+            skipped_different_fs.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        
         *update_counter += 1;
-        if *update_counter % 100 == 0 {
+        if *update_counter % 50 == 0 {
             if let Ok(mut cp) = current_path.try_lock() {
                 *cp = dir_path.to_string_lossy().to_string();
             }
         }
         
-        // Try to read directory
-        let entries_in_dir = match try_read_directory(dir_path) {
-            Some(e) => e,
-            None => {
-                let count = skipped_dirs.fetch_add(1, Ordering::Relaxed);
-                let estimated_size = estimate_inaccessible_size(dir_path);
-                if estimated_size > 0 {
-                    skipped_bytes.fetch_add(estimated_size, Ordering::Relaxed);
-                    total_size.fetch_add(estimated_size, Ordering::Relaxed);
-                }
-                if count % 500 == 0 {
-                    let skipped_b = skipped_bytes.load(Ordering::Relaxed);
-                    eprintln!("⚠️  Skipped {} directories (~{} inaccessible)", 
-                        count + 1,
-                        humansize::format_size(skipped_b, humansize::DECIMAL));
-                }
+        // Read directory
+        let read_dir = match std::fs::read_dir(dir_path) {
+            Ok(rd) => rd,
+            Err(_) => {
+                skipped_permission.fetch_add(1, Ordering::Relaxed);
                 return;
             }
         };
         
         let mut new_dirs = Vec::new();
         
-        for entry in entries_in_dir {
+        for entry in read_dir {
+            let entry = match entry {
+                Ok(e) => e,
+                Err(_) => continue,
+            };
+            
             let path = entry.path();
             let name = entry.file_name();
             let name_str = name.to_string_lossy();
             
-            // Get metadata
+            // Get metadata - use symlink_metadata to detect symlinks before following
             let metadata = match entry.metadata() {
                 Ok(m) => m,
-                Err(_) => {
-                    let count = error_count.fetch_add(1, Ordering::Relaxed);
-                    if count % 1000 == 0 {
-                        eprintln!("⚠️  Encountered {} metadata errors, continuing...", count + 1);
-                    }
-                    continue;
-                }
+                Err(_) => continue,
             };
             
             let is_dir = metadata.is_dir();
-            let size = get_disk_allocation(&metadata, is_dir);
+            let is_symlink = metadata.file_type().is_symlink();
+            
+            // Skip symlinks to avoid double counting and loops
+            if is_symlink {
+                continue;
+            }
+            
+            // For files, check inode to avoid counting hard links multiple times
+            #[cfg(unix)]
+            let (size, is_hardlink_dupe) = if !is_dir {
+                let inode = metadata.ino();
+                let nlink = metadata.nlink();
+                
+                // If file has multiple hard links, only count it once
+                if nlink > 1 {
+                    let mut seen = seen_inodes.lock().unwrap();
+                    if seen.contains(&inode) {
+                        hardlink_deduped.fetch_add(1, Ordering::Relaxed);
+                        (0u64, true)
+                    } else {
+                        seen.insert(inode);
+                        (metadata.len(), false)
+                    }
+                } else {
+                    (metadata.len(), false)
+                }
+            } else {
+                (0u64, false)
+            };
+            
+            #[cfg(not(unix))]
+            let (size, is_hardlink_dupe) = if !is_dir {
+                (metadata.len(), false)
+            } else {
+                (0u64, false)
+            };
             
             if is_dir {
                 dirs_count.fetch_add(1, Ordering::Relaxed);
-                if !should_skip_path(&path) {
-                    new_dirs.push(path.clone());
-                } else {
+                // Skip directories that would cause double-counting
+                if Self::should_skip_path(&path, is_full_disk) {
                     skipped_virtual.fetch_add(1, Ordering::Relaxed);
+                } else if Self::is_different_filesystem(&path, root_device_id) {
+                    skipped_different_fs.fetch_add(1, Ordering::Relaxed);
+                } else {
+                    new_dirs.push(path.clone());
                 }
-            } else {
+            } else if !is_hardlink_dupe {
                 files_count.fetch_add(1, Ordering::Relaxed);
                 total_size.fetch_add(size, Ordering::Relaxed);
             }
             
             // Track items above minimum size or directories
-            if size >= min_size || is_dir {
-                let is_hidden = is_hidden_path(&path);
-                let is_system = is_system_path(&path);
+            if (size >= min_size && !is_hardlink_dupe) || is_dir {
+                let is_hidden = Self::is_hidden_path(&path);
+                let is_system = Self::is_system_path(&path);
                 let modified = get_modified_time(&metadata);
                 
                 local_entries.push(FileEntry {
@@ -483,7 +580,7 @@ impl Scanner {
             }
         }
         
-        // Add new directories to the work queue
+        // Add new directories to queue
         if !new_dirs.is_empty() {
             let mut queue = work_queue.lock().unwrap();
             for dir in new_dirs {
@@ -497,4 +594,13 @@ impl Scanner {
         let progress = Arc::new(Mutex::new(ScanProgress::default()));
         self.scan_with_progress(path, progress).await
     }
+}
+
+fn get_modified_time(metadata: &std::fs::Metadata) -> DateTime<Local> {
+    metadata
+        .modified()
+        .ok()
+        .and_then(|t| t.elapsed().ok())
+        .map(|d| Local::now() - chrono::Duration::seconds(d.as_secs() as i64))
+        .unwrap_or_else(Local::now)
 }

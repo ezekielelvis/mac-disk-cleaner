@@ -4,6 +4,32 @@ A powerful, smart CLI disk space analyzer and cleaner built with Rust and Ratatu
 
 ## Features ✨
 
+### New Redesigned UI 🎨
+
+- **Home Screen**: Beautiful animated home screen with multiple scan options
+  - Full Disk Scan - Comprehensive system-wide analysis
+  - Home Directory - Scan personal files only  
+  - Custom Path - Choose specific directories
+  - Quick Scan - Fast scan of common junk locations
+  - Large Files Only - Find files >100MB
+  - Old & Unused Files - Files not accessed in 6+ months
+
+- **Enhanced Scanning View**:
+  - Real-time animated progress indicators
+  - Live statistics panel showing files, directories, and size
+  - Scrollable file discovery list
+  - Storage usage visualization
+  - Current path being scanned with animation
+
+- **Improved Results Navigation**:
+  - Tab-based view switching (Files / Categories)
+  - Enhanced file tree with safety indicators
+  - Visual category breakdown with percentage bars
+  - Detailed file information panel
+  - Smart recommendations sidebar
+
+### Core Features
+
 - **Full Disk Scan**: Scans the entire disk from root `/` by default with parallel workers
 - **Fast Parallel Scanning**: Uses 4 worker threads for significantly faster scans
 - **Smart Virtual FS Handling**: Automatically skips virtual filesystems (/dev, /proc, etc.)
@@ -58,10 +84,10 @@ cargo install --path .
 ### Basic Usage
 
 ```bash
-# Full disk scan (default - scans from /)
+# Launch with interactive home screen
 disk-cleaner
 
-# Scan only home directory
+# Scan only home directory (skip home screen)
 disk-cleaner --home
 
 # Scan a specific directory
@@ -74,21 +100,41 @@ disk-cleaner --min-size 10
 disk-cleaner --depth 0
 ```
 
-### Keyboard Shortcuts
+### Home Screen Controls
+
+- `↑`/`↓` or `j`/`k` - Navigate scan options
+- `Enter` - Start selected scan
+- `p` - Set custom path
+- `+`/`-` - Adjust minimum file size
+- `d` - Toggle max depth
+- `.` - Toggle hidden files
+- `q` - Quit
+
+### Scanning View Controls
+
+- `↑`/`↓` - Scroll file list
+- `q` - Cancel scan
+
+### Results View Keyboard Shortcuts
 
 **Navigation:**
 - `↑`/`k` - Move up
 - `↓`/`j` - Move down
+- `Enter`/`→`/`l` - Enter folder / View category
+- `Backspace`/`←` - Go back
+- `h` - Return to home screen
 
 **Actions:**
 - `Space` - Mark/unmark item for deletion
 - `d` - Delete marked items
-- `a` - Mark all items in current view
+- `s` - Mark all safe items
+- `a` - Mark all items (except system)
 - `c` - Clear all marks
 - `v` - Switch between file list and category view
+- `.` - Toggle hidden files
 
 **Other:**
-- `h`/`?` - Toggle help screen
+- `?` - Toggle help screen
 - `q` - Quit application
 
 ## Features in Detail 🔍
@@ -171,17 +217,3 @@ This project is licensed under the MIT License.
 ## Safety Warning ⚠️
 
 This tool permanently deletes files. Always review marked items carefully before confirming deletion. The authors are not responsible for data loss.
-
-## Roadmap 🗺️
-
-- [ ] Duplicate file detection
-- [ ] Export scan results to JSON/CSV
-- [ ] Scheduled automatic cleaning
-- [ ] Cloud storage integration
-- [ ] Custom rules engine
-- [ ] File preview
-- [ ] Undo functionality (trash/recycle bin)
-
----
-
-Built with ❤️ using Rust and Ratatui
