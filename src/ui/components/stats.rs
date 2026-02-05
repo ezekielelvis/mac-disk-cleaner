@@ -35,7 +35,6 @@ pub fn render_stat_card(f: &mut Frame, area: Rect, label: &str, value: &str, col
         .border_style(Style::default().fg(Color::Rgb(45, 45, 60)));
     f.render_widget(block, area);
 }
-
 /// Render stats panel for scanning view
 pub fn render_stats_panel(f: &mut Frame, area: Rect, files_scanned: usize, dirs_scanned: usize, total_size: u64, entries_count: usize, frame_count: u32) {
     let chunks = Layout::default()
