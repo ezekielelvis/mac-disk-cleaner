@@ -120,18 +120,18 @@ pub fn render_scan_complete(f: &mut Frame, app: &App, area: Rect) {
         f.render_widget(recs_widget, chunks[3]);
     }
 
-    // Quick actions
+    // Quick actions - emphasize browse and delete workflow
     let actions = Paragraph::new(vec![
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Press ", Style::default().fg(MUTED)),
-            Span::styled("Enter", Style::default().fg(ACCENT).bold()),
-            Span::styled(" Browse Files    ", Style::default().fg(MUTED)),
-            Span::styled("f", Style::default().fg(SUCCESS).bold()),
+            Span::styled("  ", Style::default()),
+            Span::styled("Enter/b", Style::default().fg(SUCCESS).bold()),
+            Span::styled(" 📂 Browse & Delete    ", Style::default().fg(TEXT)),
+            Span::styled("f", Style::default().fg(ACCENT).bold()),
             Span::styled(" All Files    ", Style::default().fg(MUTED)),
             Span::styled("d", Style::default().fg(WARNING).bold()),
             Span::styled(" Details    ", Style::default().fg(MUTED)),
-            Span::styled("s", Style::default().fg(SUCCESS).bold()),
+            Span::styled("s", Style::default().fg(Color::Rgb(34, 197, 94)).bold()),
             Span::styled(" Select Safe    ", Style::default().fg(MUTED)),
             Span::styled("h", Style::default().fg(ACCENT).bold()),
             Span::styled(" Home    ", Style::default().fg(MUTED)),

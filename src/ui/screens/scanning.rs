@@ -62,89 +62,104 @@ fn render_path_tree(f: &mut Frame, current_path: &str, area: Rect, frame_count: 
         current_path.to_string()
     };
 
-    // Animated pulse indicator
-    let pulse_chars = ["●", "◐", "○", "◑"];
-    let pulse = pulse_chars[((frame_count / 8) % 4) as usize];
+    // Animated scanning indicator
+    let scan_frames = ["◜", "◠", "◝", "◞", "◡", "◟"];
+    let scan_indicator = scan_frames[((frame_count / 6) % 6) as usize];
 
     // Split path into segments and build tree
     let segments: Vec<&str> = path_display.split('/').filter(|s| !s.is_empty()).collect();
     
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(format!(" {} ", pulse), Style::default().fg(ACCENT)),
-            Span::styled("Active Scan Path", Style::default().fg(TEXT).bold()),
+            Span::styled(format!(" {} ", scan_indicator), Style::default().fg(ACCENT)),
+            Span::styled("Scanning Directory Tree", Style::default().fg(TEXT).bold()),
         ]),
-        Line::from(""),
     ];
     
     if segments.is_empty() {
+        lines.push(Line::from(""));
         lines.push(Line::from(Span::styled("  Initializing...", Style::default().fg(MUTED))));
     } else {
+        // Colors for different depth levels - creates a gradient effect
+        let depth_colors = [
+            Color::Rgb(156, 163, 175),  // Gray
+            Color::Rgb(129, 140, 248),  // Indigo light
+            Color::Rgb(167, 139, 250),  // Purple
+            Color::Rgb(192, 132, 252),  // Purple light
+            Color::Rgb(139, 233, 253),  // Cyan
+            Color::Rgb(94, 234, 212),   // Teal
+            Color::Rgb(134, 239, 172),  // Green
+            Color::Rgb(253, 224, 71),   // Yellow
+        ];
+        
         // Show root
         lines.push(Line::from(vec![
-            Span::styled("  /", Style::default().fg(TEXT_DIM)),
+            Span::styled("  ", Style::default()),
+            Span::styled("/", Style::default().fg(TEXT).bold()),
         ]));
         
-        // Build tree structure - limit depth for display
-        let max_display = 8.min(segments.len());
+        // Build continuous tree structure - show ALL segments
+        let max_display = (area.height as usize).saturating_sub(5).min(segments.len());
         let start_idx = if segments.len() > max_display { segments.len() - max_display } else { 0 };
+        
+        // Show ellipsis if path was truncated (at the top)
+        if start_idx > 0 {
+            lines.push(Line::from(vec![
+                Span::styled("  │", Style::default().fg(Color::Rgb(75, 75, 95))),
+            ]));
+            lines.push(Line::from(vec![
+                Span::styled("  ├─ ", Style::default().fg(Color::Rgb(75, 75, 95))),
+                Span::styled(format!("... {} more levels ...", start_idx), Style::default().fg(MUTED).italic()),
+            ]));
+        }
         
         for (display_i, i) in (start_idx..segments.len()).enumerate() {
             let segment = segments[i];
             let is_last = i == segments.len() - 1;
-            let depth = (display_i + 1).min(8);
+            let color_idx = display_i % depth_colors.len();
+            let segment_color = depth_colors[color_idx];
             
-            // Create indentation with tree lines
-            let mut indent_spans = vec![Span::styled("  ", Style::default())];
-            for d in 0..depth.saturating_sub(1) {
-                if d < display_i {
-                    indent_spans.push(Span::styled("│   ", Style::default().fg(Color::Rgb(55, 55, 75))));
-                } else {
-                    indent_spans.push(Span::styled("    ", Style::default()));
-                }
+            // Create continuous tree line
+            let mut line_spans = vec![Span::styled("  ", Style::default())];
+            
+            // Vertical connector line
+            if !is_last {
+                line_spans.push(Span::styled("├─ ", Style::default().fg(Color::Rgb(75, 75, 95))));
+            } else {
+                line_spans.push(Span::styled("└─ ", Style::default().fg(ACCENT)));
             }
             
-            // Tree branch character
-            let branch = if is_last { "└── " } else { "├── " };
-            indent_spans.push(Span::styled(branch, Style::default().fg(Color::Rgb(75, 75, 95))));
-            
-            // Segment name with styling
-            let (icon, style) = if is_last {
-                ("📂 ", Style::default().fg(ACCENT).bold())
-            } else {
-                ("📁 ", Style::default().fg(TEXT_DIM))
-            };
-            
-            indent_spans.push(Span::styled(icon, style));
-            
             // Truncate long segment names
-            let display_name = if segment.len() > 20 {
-                format!("{}...", &segment[..17])
+            let display_name = if segment.len() > 25 {
+                format!("{}...", &segment[..22])
             } else {
                 segment.to_string()
             };
-            indent_spans.push(Span::styled(display_name, style));
             
-            // Add animated indicator for active path
             if is_last {
-                let scan_dots = match (frame_count / 10) % 4 {
-                    0 => " .",
-                    1 => " ..",
-                    2 => " ...",
+                // Active directory - highlighted with animation
+                line_spans.push(Span::styled(display_name, Style::default().fg(ACCENT).bold()));
+                
+                // Animated scanning indicator
+                let dots = match (frame_count / 8) % 4 {
+                    0 => " ·",
+                    1 => " ··",
+                    2 => " ···",
                     _ => "",
                 };
-                indent_spans.push(Span::styled(scan_dots, Style::default().fg(ACCENT)));
+                line_spans.push(Span::styled(dots, Style::default().fg(SUCCESS)));
+            } else {
+                line_spans.push(Span::styled(display_name, Style::default().fg(segment_color)));
             }
             
-            lines.push(Line::from(indent_spans));
-        }
-        
-        // Show ellipsis if path was truncated
-        if start_idx > 0 {
-            lines.insert(3, Line::from(vec![
-                Span::styled("    ⋮ ", Style::default().fg(MUTED)),
-                Span::styled(format!("({} more levels)", start_idx), Style::default().fg(TEXT_DIM)),
-            ]));
+            lines.push(Line::from(line_spans));
+            
+            // Add connecting vertical line for non-last items
+            if !is_last && display_i < max_display - 1 {
+                lines.push(Line::from(vec![
+                    Span::styled("  │", Style::default().fg(Color::Rgb(55, 55, 75))),
+                ]));
+            }
         }
     }
     
@@ -155,7 +170,7 @@ fn render_path_tree(f: &mut Frame, current_path: &str, area: Rect, frame_count: 
 
     let path_widget = Paragraph::new(lines)
         .block(Block::default()
-            .title(Span::styled(" 🔍 Scanning ", Style::default().fg(TEXT)))
+            .title(Span::styled(" Scan Path ", Style::default().fg(TEXT)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
     
@@ -163,25 +178,25 @@ fn render_path_tree(f: &mut Frame, current_path: &str, area: Rect, frame_count: 
 }
 
 fn render_category_breakdown(f: &mut Frame, category_sizes: &std::collections::HashMap<String, u64>, total_size: u64, area: Rect, frame_count: u32) {
-    // Define category colors for the pie chart segments
+    // Distinct, vibrant colors for each category - no duplicates
     let category_colors: Vec<(&str, Color)> = vec![
-        ("🗑️ Cache", Color::Yellow),
-        ("🌡️ Temp Files", Color::Red),
-        ("📦 Large Files", Color::Magenta),
-        ("📅 Old Files", Color::Cyan),
-        ("👯 Duplicate Names", Color::Blue),
-        ("📜 Log Files", Color::LightYellow),
-        ("🔨 Build Artifacts", Color::LightRed),
-        ("📦 node_modules", Color::LightMagenta),
-        ("📥 Package Cache", Color::LightCyan),
-        ("👁️ Hidden Files", Color::Gray),
-        ("⚙️ System Files", Color::Red),
-        ("📚 Library Files", Color::LightBlue),
-        ("⬇️ Downloads", Color::Green),
-        ("📄 Documents", Color::White),
-        ("🎬 Media", Color::LightGreen),
-        ("🗜️ Archives", Color::Yellow),
-        ("📁 Regular", Color::White),
+        ("Cache", Color::Rgb(251, 191, 36)),       // Amber
+        ("Temp Files", Color::Rgb(239, 68, 68)),   // Red
+        ("Large Files", Color::Rgb(168, 85, 247)), // Purple
+        ("Old Files", Color::Rgb(6, 182, 212)),    // Cyan
+        ("Duplicate Names", Color::Rgb(59, 130, 246)), // Blue
+        ("Log Files", Color::Rgb(245, 158, 11)),   // Orange
+        ("Build Artifacts", Color::Rgb(236, 72, 153)), // Pink
+        ("node_modules", Color::Rgb(139, 92, 246)), // Violet
+        ("Package Cache", Color::Rgb(20, 184, 166)), // Teal
+        ("Hidden Files", Color::Rgb(107, 114, 128)), // Gray
+        ("System Files", Color::Rgb(220, 38, 38)), // Dark Red
+        ("Library Files", Color::Rgb(96, 165, 250)), // Light Blue
+        ("Downloads", Color::Rgb(34, 197, 94)),    // Green
+        ("Documents", Color::Rgb(226, 232, 240)),  // Light
+        ("Media", Color::Rgb(132, 204, 22)),       // Lime
+        ("Archives", Color::Rgb(234, 179, 8)),     // Yellow
+        ("Regular", Color::Rgb(148, 163, 184)),    // Slate
     ];
     
     // Sort categories by size (largest first)
@@ -190,8 +205,7 @@ fn render_category_breakdown(f: &mut Frame, category_sizes: &std::collections::H
     
     let mut lines = vec![
         Line::from(vec![
-            Span::styled(" 📊 ", Style::default().fg(ACCENT)),
-            Span::styled("Category Breakdown", Style::default().fg(TEXT).bold()),
+            Span::styled(" Category Breakdown", Style::default().fg(TEXT).bold()),
         ]),
         Line::from(""),
     ];
@@ -199,76 +213,113 @@ fn render_category_breakdown(f: &mut Frame, category_sizes: &std::collections::H
     if sorted_categories.is_empty() || total_size == 0 {
         lines.push(Line::from(Span::styled("  Scanning...", Style::default().fg(MUTED))));
     } else {
-        // Build ASCII pie chart representation
-        let pie_width = 20;
+        // Calculate bar width based on available space (wider bars)
+        let bar_width = (area.width as usize).saturating_sub(30).min(35).max(15);
         
-        // Calculate percentages and build pie segments
-        let mut pie_segments: Vec<(String, f64, Color)> = Vec::new();
-        for (cat_name, size) in sorted_categories.iter().take(8) {
+        // Build a segmented horizontal bar showing proportions
+        let mut bar_spans: Vec<Span> = vec![Span::styled(" ", Style::default())];
+        
+        for (cat_name, size) in sorted_categories.iter().take(6) {
             let size_val = **size;
-            let percentage = if total_size > 0 { size_val as f64 / total_size as f64 * 100.0 } else { 0.0 };
-            if percentage >= 1.0 {  // Only show categories with >= 1%
+            let percentage = if total_size > 0 { size_val as f64 / total_size as f64 } else { 0.0 };
+            if percentage >= 0.02 {  // Only show categories with >= 2%
+                let segment_width = ((percentage) * bar_width as f64).max(1.0) as usize;
+                
+                // Find color for this category
                 let color = category_colors.iter()
-                    .find(|(name, _)| cat_name.contains(name.split(' ').last().unwrap_or("")))
+                    .find(|(name, _)| {
+                        let search = name.to_lowercase();
+                        cat_name.to_lowercase().contains(&search) || 
+                        search.contains(&cat_name.to_lowercase().replace("🗑️ ", "").replace("🌡️ ", "").replace("📦 ", "").replace("📅 ", "").replace("👯 ", "").replace("📜 ", "").replace("🔨 ", "").replace("📥 ", "").replace("👁️ ", "").replace("⚙️ ", "").replace("📚 ", "").replace("⬇️ ", "").replace("📄 ", "").replace("🎬 ", "").replace("🗜️ ", "").replace("📁 ", ""))
+                    })
                     .map(|(_, c)| *c)
                     .unwrap_or(TEXT_DIM);
-                pie_segments.push((cat_name.to_string(), percentage, color));
+                
+                bar_spans.push(Span::styled(
+                    "█".repeat(segment_width),
+                    Style::default().fg(color)
+                ));
             }
         }
         
-        // Draw a horizontal bar chart (visual pie representation)
-        let bar_total = pie_width as f64;
-        let mut bar_line_spans: Vec<Span> = vec![Span::styled("  ", Style::default())];
-        
-        for (_, percentage, color) in &pie_segments {
-            let segment_width = ((percentage / 100.0) * bar_total).max(1.0) as usize;
-            bar_line_spans.push(Span::styled(
-                "█".repeat(segment_width),
-                Style::default().fg(*color)
+        // Fill remaining with background
+        let used_width: usize = bar_spans.iter().map(|s| s.content.len()).sum();
+        if used_width < bar_width + 1 {
+            bar_spans.push(Span::styled(
+                "░".repeat(bar_width + 1 - used_width),
+                Style::default().fg(Color::Rgb(45, 45, 60))
             ));
         }
         
-        lines.push(Line::from(bar_line_spans));
+        lines.push(Line::from(bar_spans));
         lines.push(Line::from(""));
         
-        // Animated indicator
-        let pulse_chars = ["●", "◐", "○", "◑"];
-        let pulse = pulse_chars[((frame_count / 8) % 4) as usize];
+        // Animated scanning indicator
+        let scan_frames = ["◜", "◠", "◝", "◞", "◡", "◟"];
+        let scan_char = scan_frames[((frame_count / 6) % 6) as usize];
         
-        // List categories with sizes
+        // List categories with sizes - cleaner format without heavy icons
         let max_items = (area.height.saturating_sub(6)) as usize;
         
         for (i, (cat_name, size)) in sorted_categories.iter().take(max_items).enumerate() {
             let size_val = **size;
             let percentage = if total_size > 0 { size_val as f64 / total_size as f64 * 100.0 } else { 0.0 };
             
+            // Clean category name - remove emoji icons
+            let clean_name = cat_name
+                .replace("🗑️ ", "")
+                .replace("🌡️ ", "")
+                .replace("📦 ", "")
+                .replace("📅 ", "")
+                .replace("👯 ", "")
+                .replace("📜 ", "")
+                .replace("🔨 ", "")
+                .replace("📥 ", "")
+                .replace("👁️ ", "")
+                .replace("⚙️ ", "")
+                .replace("📚 ", "")
+                .replace("⬇️ ", "")
+                .replace("📄 ", "")
+                .replace("🎬 ", "")
+                .replace("🗜️ ", "")
+                .replace("📁 ", "");
+            
+            // Find color for this category
             let color = category_colors.iter()
-                .find(|(name, _)| cat_name.contains(name.split(' ').last().unwrap_or("")))
+                .find(|(name, _)| {
+                    let search = name.to_lowercase();
+                    clean_name.to_lowercase().contains(&search) || search.contains(&clean_name.to_lowercase())
+                })
                 .map(|(_, c)| *c)
                 .unwrap_or(TEXT_DIM);
             
             let size_str = humansize::format_size(size_val, humansize::DECIMAL);
             
             // Truncate category name if needed
-            let display_name = if cat_name.len() > 16 {
-                format!("{}...", &cat_name[..13])
+            let display_name = if clean_name.len() > 14 {
+                format!("{}...", &clean_name[..11])
             } else {
-                format!("{:<16}", cat_name)
+                format!("{:<14}", clean_name)
             };
             
-            // Animated indicator for top category
+            // Animated indicator for top category only
             let indicator = if i == 0 { 
-                Span::styled(format!(" {} ", pulse), Style::default().fg(ACCENT))
+                Span::styled(format!(" {} ", scan_char), Style::default().fg(SUCCESS))
             } else {
                 Span::styled("   ", Style::default())
             };
             
+            // Mini bar for each category
+            let mini_bar_width = (percentage / 100.0 * 8.0).max(1.0).min(8.0) as usize;
+            let mini_bar = "▓".repeat(mini_bar_width) + &"░".repeat(8 - mini_bar_width);
+            
             lines.push(Line::from(vec![
                 indicator,
-                Span::styled("█ ", Style::default().fg(color)),
+                Span::styled(mini_bar, Style::default().fg(color)),
+                Span::styled(" ", Style::default()),
                 Span::styled(display_name, Style::default().fg(TEXT)),
                 Span::styled(format!("{:>8}", size_str), Style::default().fg(TEXT_DIM)),
-                Span::styled(format!(" {:>5.1}%", percentage), Style::default().fg(MUTED)),
+                Span::styled(format!(" {:>5.1}%", percentage), Style::default().fg(color)),
             ]));
         }
         
@@ -280,8 +331,8 @@ fn render_category_breakdown(f: &mut Frame, category_sizes: &std::collections::H
             
             lines.push(Line::from(vec![
                 Span::styled("   ", Style::default()),
-                Span::styled("░ ", Style::default().fg(MUTED)),
-                Span::styled(format!("+{} more", other_count), Style::default().fg(TEXT_DIM)),
+                Span::styled("········ ", Style::default().fg(MUTED)),
+                Span::styled(format!("+{:<6} more", other_count), Style::default().fg(TEXT_DIM)),
                 Span::styled(format!("{:>8}", humansize::format_size(other_size, humansize::DECIMAL)), Style::default().fg(TEXT_DIM)),
                 Span::styled(format!(" {:>5.1}%", other_percentage), Style::default().fg(MUTED)),
             ]));
@@ -290,7 +341,7 @@ fn render_category_breakdown(f: &mut Frame, category_sizes: &std::collections::H
 
     let category_widget = Paragraph::new(lines)
         .block(Block::default()
-            .title(Span::styled(" 📈 Categories Found ", Style::default().fg(TEXT)))
+            .title(Span::styled(" Categories Found ", Style::default().fg(TEXT)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Rgb(55, 55, 75))));
     
