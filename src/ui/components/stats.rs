@@ -36,20 +36,6 @@ pub fn render_stat_card(f: &mut Frame, area: Rect, label: &str, value: &str, col
     f.render_widget(block, area);
 }
 
-/// Render a stat block for summary screens
-pub fn render_stat_block(label: &str, value: &str, color: Color) -> Paragraph<'static> {
-    Paragraph::new(vec![
-        Line::from(""),
-        Line::from(Span::styled(label.to_string(), Style::default().fg(MUTED))),
-        Line::from(""),
-        Line::from(Span::styled(value.to_string(), Style::default().fg(color).bold())),
-    ])
-    .alignment(Alignment::Center)
-    .block(Block::default()
-        .borders(Borders::ALL)
-        .border_style(Style::default().fg(Color::Rgb(45, 45, 60))))
-}
-
 /// Render stats panel for scanning view
 pub fn render_stats_panel(f: &mut Frame, area: Rect, files_scanned: usize, dirs_scanned: usize, total_size: u64, entries_count: usize, frame_count: u32) {
     let chunks = Layout::default()

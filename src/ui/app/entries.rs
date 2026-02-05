@@ -1,5 +1,3 @@
-// Entries - Methods for getting and filtering file entries
-
 use crate::models::FileEntry;
 use super::state::{App, BrowseSortMode};
 

@@ -1,5 +1,3 @@
-#![allow(dead_code)]
-
 use ratatui::{
     Frame,
     layout::Rect,

@@ -1,9 +1,7 @@
-// Run - Main application loop and event handling
-
 use super::state::App;
 use super::scan::run_scan;
 use super::super::types::*;
-use super::super::screens::{render_home, render_scanning_enhanced, render_results_view, render_scan_complete, render_scan_details};
+use super::super::screens::{render_home, render_scanning_enhanced, render_results_view, render_scan_details};
 use super::super::components::{render_path_input, render_help_overlay, render_confirmation_dialog, render_system_warning_dialog};
 use super::super::handlers::{process_mouse_event, MouseResult};
 use crate::analyzer::Analyzer;
@@ -75,11 +73,6 @@ async fn run_main_loop(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, ap
                             app.state = AppState::Home;
                         }
                     }
-                    AppState::ScanComplete => {
-                        if handle_scan_complete_input(app, key.code)? {
-                            return Ok(());
-                        }
-                    }
                     AppState::ScanDetails => {
                         if handle_scan_details_input(app, key.code)? {
                             return Ok(());
@@ -127,7 +120,7 @@ async fn handle_mouse_event(
                         app.home_menu.selected_option -= 1;
                     }
                 }
-                AppState::Viewing | AppState::ScanComplete => {
+                AppState::Viewing => {
                     let current = app.list_state.selected().unwrap_or(0);
                     if current > 0 {
                         app.list_state.select(Some(current - 1));
@@ -152,7 +145,7 @@ async fn handle_mouse_event(
                         app.home_menu.selected_option += 1;
                     }
                 }
-                AppState::Viewing | AppState::ScanComplete => {
+                AppState::Viewing => {
                     if let Some(result) = &app.scan_result {
                         let current = app.list_state.selected().unwrap_or(0);
                         if current < result.entries.len().saturating_sub(1) {
@@ -333,56 +326,6 @@ fn handle_confirmation_input(app: &mut App, key: KeyCode) {
     }
 }
 
-fn handle_scan_complete_input(app: &mut App, key: KeyCode) -> Result<bool> {
-    match key {
-        KeyCode::Char('q') => return Ok(true),
-        KeyCode::Enter | KeyCode::Char('b') => {
-            // Go to file browser view
-            app.state = AppState::Viewing;
-            app.status_message = "Browse files · Space to select · d to delete".to_string();
-        }
-        KeyCode::Char('f') => {
-            // Go to All Files flat view
-            app.state = AppState::AllFiles;
-            app.all_files_state.list_state.select(Some(0));
-        }
-        KeyCode::Char('d') => {
-            app.state = AppState::ScanDetails;
-        }
-        KeyCode::Char('s') => {
-            if let Some(ref result) = app.scan_result {
-                app.marked_for_deletion = result.entries
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, e)| {
-                        let cat = Analyzer::categorize_file(e);
-                        cat.is_safe_to_delete() && !e.is_system
-                    })
-                    .map(|(i, _)| i)
-                    .collect();
-                let size: u64 = app.marked_for_deletion.iter()
-                    .filter_map(|&i| result.entries.get(i))
-                    .map(|e| e.size)
-                    .sum();
-                app.status_message = format!(
-                    "✓ {} safe items selected · {}",
-                    app.marked_for_deletion.len(),
-                    humansize::format_size(size, humansize::DECIMAL)
-                );
-            }
-            app.state = AppState::Viewing;
-        }
-        KeyCode::Char('h') => {
-            app.state = AppState::Home;
-            app.scan_result = None;
-            app.marked_for_deletion.clear();
-            app.navigation_stack.clear();
-        }
-        _ => {}
-    }
-    Ok(false)
-}
-
 fn handle_scan_details_input(app: &mut App, key: KeyCode) -> Result<bool> {
     match key {
         KeyCode::Char('q') => return Ok(true),
@@ -418,7 +361,7 @@ fn handle_scan_details_input(app: &mut App, key: KeyCode) -> Result<bool> {
             app.state = AppState::Viewing;
         }
         KeyCode::Esc => {
-            app.state = AppState::ScanComplete;
+            app.state = AppState::Viewing;
         }
         KeyCode::Char('h') => {
             app.state = AppState::Home;
@@ -546,6 +489,15 @@ fn handle_viewing_input(app: &mut App, key: KeyCode) -> Result<bool> {
         KeyCode::Char('F') => {
             app.state = AppState::AllFiles;
             app.all_files_state.list_state.select(Some(0));
+        }
+        KeyCode::Char('i') => {
+            app.state = AppState::ScanDetails;
+        }
+        KeyCode::Char('b') => {
+            app.state = AppState::Viewing;
+            app.current_view = ViewMode::AllFiles;
+            app.list_state.select(Some(0));
+            app.status_message = "Browse files · Space to select · d to delete".to_string();
         }
         KeyCode::Esc => {
             if app.show_help {
@@ -715,9 +667,6 @@ fn render_ui(f: &mut Frame, app: &mut App) {
         }
         AppState::Scanning => {
             render_scanning_enhanced(f, app, app.frame_count, app.scan_scroll_offset);
-        }
-        AppState::ScanComplete => {
-            render_scan_complete(f, app, f.area());
         }
         AppState::ScanDetails => {
             render_scan_details(f, app, f.area());

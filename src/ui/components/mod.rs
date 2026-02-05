@@ -10,6 +10,5 @@ pub use header::*;
 pub use footer::*;
 pub use dialogs::*;
 pub use stats::*;
-#[allow(unused_imports)]
 pub use file_list::*;
 pub use storage_gauge::*;

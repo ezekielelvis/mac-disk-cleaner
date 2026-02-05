@@ -3,7 +3,7 @@
 use crate::analyzer::Analyzer;
 use crate::scanner::Scanner;
 use super::state::App;
-use super::super::types::{AppState, ScanProgressSnapshot};
+use super::super::types::{AppState, ScanProgressSnapshot, ViewMode};
 use super::super::screens::render_scanning_enhanced;
 use anyhow::Result;
 use crossterm::event::{self, Event, KeyCode, KeyEventKind};
@@ -108,7 +108,10 @@ pub async fn run_scan(terminal: &mut Terminal<CrosstermBackend<io::Stdout>>, app
             );
             
             app.scan_result = Some(result);
-            app.state = AppState::ScanComplete;  // Go to summary first so users can choose browse
+            app.current_path = app.scan_path.clone();
+            app.navigation_stack.clear();
+            app.current_view = ViewMode::AllFiles;
+            app.state = AppState::Viewing;  // Jump straight into browsing once scan finishes
             app.list_state.select(Some(0));
             app.category_state.select(Some(0));
         }

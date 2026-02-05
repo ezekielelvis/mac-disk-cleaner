@@ -1,6 +1,3 @@
-// App Module - Main application state and logic
-// Split into submodules for better organization
-
 mod state;
 mod navigation;
 mod deletion;

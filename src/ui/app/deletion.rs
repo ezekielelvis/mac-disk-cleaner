@@ -1,5 +1,3 @@
-// Deletion - File deletion and marking logic
-
 use crate::analyzer::Analyzer;
 use crate::cleaner::Cleaner;
 use crate::scanner::get_system_warning;

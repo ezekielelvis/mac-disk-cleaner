@@ -1,5 +1,3 @@
-// App State - Core application state struct and constructors
-
 use crate::models::{FileEntry, ScanProgress, ScanResult};
 use crate::analyzer::FileCategory;
 use super::super::types::*;

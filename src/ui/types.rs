@@ -6,7 +6,6 @@ pub enum AppState {
     Home,           // New home screen with options
     PathInput,      // Custom path input mode
     Scanning,
-    ScanComplete,   // Summary screen after scan with quick actions
     ScanDetails,    // Detailed scan results with comprehensive stats
     Viewing,
     CategoryView,

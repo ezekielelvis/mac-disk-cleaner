@@ -1,5 +1,3 @@
-// Navigation - File browser navigation methods
-
 use super::state::App;
 use super::super::types::ViewMode;
 use std::path::PathBuf;
