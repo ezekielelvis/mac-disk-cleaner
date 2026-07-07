@@ -156,31 +156,19 @@ async fn post_scan(
         let progress = inner.progress.clone();
         let scan_result = scanner.scan_with_progress(&scan_path, progress).await;
 
-        match scan_result {
-            Ok(result) => {
-                // Categorize once, without duplicate-name context, to stay O(n).
-                let categorized: Vec<(FileEntry, FileCategory)> = result
-                    .entries
-                    .into_iter()
-                    .map(|e| {
-                        let cat = Analyzer::categorize_file(&e);
-                        (e, cat)
-                    })
-                    .collect();
-                let mut results = inner.results.lock().await;
-                *results = Some(ResultsState {
-                    scan_path: scan_path.clone(),
-                    entries: categorized,
-                });
-            }
-            Err(_) => {}
+        if let Ok(result) = scan_result {
+            // Categorize the whole batch in O(n) (duplicate-name detection
+            // included) rather than O(n^2) per-entry context scans.
+            let categorized = Analyzer::categorize_all(result.entries);
+            let mut results = inner.results.lock().await;
+            *results = Some(ResultsState {
+                scan_path: scan_path.clone(),
+                entries: categorized,
+            });
         }
 
-        // Ensure the stream sees completion even if the scanner didn't flag it.
-        {
-            let mut prog = inner.progress.lock().await;
-            prog.is_complete = true;
-        }
+        // Signals completion to the SSE stream: cleared last, once results
+        // (if any) are stored, so `complete` never precedes a readable result.
         inner.scanning.store(false, Ordering::SeqCst);
     });
 
@@ -190,23 +178,27 @@ async fn post_scan(
 async fn scan_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
-    let progress = state.inner.progress.clone();
+    let inner = state.inner.clone();
     let stream = async_stream::stream! {
         loop {
+            // Completion is tied to the scan task finishing (which flips
+            // `scanning` false only *after* results are stored), so a client
+            // that fetches /api/results on `complete` never races an empty
+            // store.
+            let done = !inner.scanning.load(Ordering::SeqCst);
             let dto = {
-                let prog = progress.lock().await;
+                let prog = inner.progress.lock().await;
                 ProgressDto {
                     files: prog.files_scanned,
                     dirs: prog.dirs_scanned,
                     size: prog.total_size_scanned,
                     current_path: prog.current_path.clone(),
-                    complete: prog.is_complete,
+                    complete: done,
                 }
             };
-            let complete = dto.complete;
             let data = serde_json::to_string(&dto).unwrap_or_else(|_| "{}".to_string());
             yield Ok(Event::default().data(data));
-            if complete {
+            if done {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -246,14 +238,18 @@ async fn post_delete(
     };
 
     let scan_root = rs.scan_path.clone();
+    // Resolve the root once so the per-path guard compares against a canonical,
+    // symlink-free absolute path.
+    let canonical_root = scan_root.canonicalize().unwrap_or_else(|_| scan_root.clone());
     let mut delete_results = Vec::new();
     let mut freed = 0u64;
     let mut deleted_paths: Vec<PathBuf> = Vec::new();
 
     for raw in &req.paths {
         let path = PathBuf::from(raw);
-        // Safety: only delete paths inside the scanned root.
-        if !path.starts_with(&scan_root) {
+        // Safety: only delete paths that genuinely resolve inside the scanned
+        // root. This blocks `..` traversal and symlinked parent directories.
+        if !path_within_root(&path, &canonical_root) {
             delete_results.push(DeleteResult { path: raw.clone(), success: false });
             continue;
         }
@@ -284,6 +280,24 @@ async fn post_delete(
         deleted,
     })
     .into_response()
+}
+
+/// Returns true only if `path` resolves to a location inside `canonical_root`.
+///
+/// The parent directory is canonicalized (resolving `..` and any symlinked
+/// directories) and the final component re-attached, so the final component is
+/// never itself dereferenced — a symlink *inside* the root can be removed
+/// (only the link, never its outside target), while `../../etc/passwd` and
+/// symlinked parents that escape the root are rejected. Fails closed if the
+/// parent cannot be resolved.
+fn path_within_root(path: &Path, canonical_root: &Path) -> bool {
+    let (Some(parent), Some(name)) = (path.parent(), path.file_name()) else {
+        return false;
+    };
+    match parent.canonicalize() {
+        Ok(canonical_parent) => canonical_parent.join(name).starts_with(canonical_root),
+        Err(_) => false,
+    }
 }
 
 /// Sum the sizes of scanned files at or under `target`.

@@ -1,25 +1,50 @@
 use crate::models::FileEntry;
 use super::category::FileCategory;
+use std::collections::HashMap;
 
 pub struct ClassificationRules;
 
 impl ClassificationRules {
+    /// Classify a single entry, detecting duplicate names by re-scanning
+    /// `all_entries` (O(n) per call). Prefer [`classify_with_name_counts`] when
+    /// categorizing a whole batch — it's O(1) per entry given a prebuilt map.
     pub fn classify(entry: &FileEntry, all_entries: &[FileEntry]) -> FileCategory {
+        let name_counts = Self::build_name_counts(all_entries);
+        Self::classify_with_name_counts(entry, &name_counts)
+    }
+
+    /// Build a map of file name -> number of non-directory entries with that
+    /// name. Computed once per batch so duplicate detection stays O(n) overall.
+    pub fn build_name_counts(entries: &[FileEntry]) -> HashMap<String, usize> {
+        let mut counts: HashMap<String, usize> = HashMap::with_capacity(entries.len());
+        for e in entries {
+            if !e.is_dir {
+                *counts.entry(e.name.clone()).or_default() += 1;
+            }
+        }
+        counts
+    }
+
+    /// Classify a single entry using a prebuilt name-frequency map (see
+    /// [`build_name_counts`]). Equivalent to [`classify`] but O(1) per entry.
+    pub fn classify_with_name_counts(
+        entry: &FileEntry,
+        name_counts: &HashMap<String, usize>,
+    ) -> FileCategory {
         // System files take highest priority - NEVER suggest deleting
         if entry.is_system {
             return FileCategory::SystemFiles;
         }
 
-        // Check for duplicate names
-        if !all_entries.is_empty() {
-            let same_name_count = all_entries.iter()
-                .filter(|e| e.name == entry.name && e.path != entry.path && !e.is_dir)
-                .count();
-            if same_name_count > 0 && !entry.is_dir {
-                return FileCategory::DuplicateName;
+        // A non-dir file whose name also appears elsewhere is a duplicate.
+        if !entry.is_dir {
+            if let Some(&count) = name_counts.get(&entry.name) {
+                if count > 1 {
+                    return FileCategory::DuplicateName;
+                }
             }
         }
-        
+
         Self::classify_by_pattern(entry)
     }
 
