@@ -1,5 +1,3 @@
-use ratatui::style::Color;
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum FileCategory {
     Cache,
@@ -44,25 +42,26 @@ impl FileCategory {
         }
     }
 
-    pub fn color(&self) -> Color {
+    /// CSS hex color used by the web UI for this category.
+    pub fn color(&self) -> &str {
         match self {
-            FileCategory::Cache => Color::Yellow,
-            FileCategory::TempFiles => Color::Red,
-            FileCategory::LargeFiles => Color::Magenta,
-            FileCategory::OldFiles => Color::Cyan,
-            FileCategory::DuplicateName => Color::Blue,
-            FileCategory::LogFiles => Color::LightYellow,
-            FileCategory::BuildArtifacts => Color::LightRed,
-            FileCategory::NodeModules => Color::LightMagenta,
-            FileCategory::PackageCache => Color::LightCyan,
-            FileCategory::HiddenFiles => Color::Gray,
-            FileCategory::SystemFiles => Color::Red,
-            FileCategory::LibraryFiles => Color::LightBlue,
-            FileCategory::Downloads => Color::Green,
-            FileCategory::Documents => Color::White,
-            FileCategory::Media => Color::LightGreen,
-            FileCategory::Archives => Color::Yellow,
-            FileCategory::Regular => Color::White,
+            FileCategory::Cache => "#e5c07b",
+            FileCategory::TempFiles => "#e06c75",
+            FileCategory::LargeFiles => "#c678dd",
+            FileCategory::OldFiles => "#56b6c2",
+            FileCategory::DuplicateName => "#61afef",
+            FileCategory::LogFiles => "#d19a66",
+            FileCategory::BuildArtifacts => "#ff7b72",
+            FileCategory::NodeModules => "#d291e4",
+            FileCategory::PackageCache => "#7fdbca",
+            FileCategory::HiddenFiles => "#8b95a5",
+            FileCategory::SystemFiles => "#f14c4c",
+            FileCategory::LibraryFiles => "#7aa2f7",
+            FileCategory::Downloads => "#98c379",
+            FileCategory::Documents => "#abb2bf",
+            FileCategory::Media => "#89d185",
+            FileCategory::Archives => "#e5c07b",
+            FileCategory::Regular => "#abb2bf",
         }
     }
 

@@ -1,6 +1,6 @@
 mod models;
 mod scanner;
-mod ui;
+mod web;
 mod analyzer;
 mod cleaner;
 
@@ -10,9 +10,9 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 #[command(name = "disk-cleaner")]
-#[command(about = "Smart disk space analyzer and cleaner", long_about = None)]
+#[command(about = "Smart disk space analyzer and cleaner (web UI)", long_about = None)]
 struct Args {
-    /// Directory to scan (defaults to root / for full disk scan)
+    /// Default directory to pre-fill in the UI (defaults to root / for full disk)
     #[arg(short, long)]
     path: Option<PathBuf>,
 
@@ -24,26 +24,52 @@ struct Args {
     #[arg(short, long, default_value = "0")]
     depth: usize,
 
-    /// Scan only home directory instead of full disk
+    /// Use home directory as the default scan path instead of full disk
     #[arg(long)]
     home: bool,
+
+    /// Port for the web UI
+    #[arg(long, default_value = "8080")]
+    port: u16,
+
+    /// Do not open the browser automatically
+    #[arg(long)]
+    no_open: bool,
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = Args::parse();
-    
-    let scan_path = if let Some(path) = args.path {
+
+    let default_path = if let Some(path) = args.path {
         path
     } else if args.home {
         dirs::home_dir().expect("Failed to get home directory")
     } else {
-        // Default to root for full disk scan
         PathBuf::from("/")
     };
 
-    // Run the TUI application
-    ui::run_app(scan_path, args.min_size, args.depth).await?;
-    
+    if !args.no_open {
+        let url = format!("http://127.0.0.1:{}", args.port);
+        tokio::spawn(async move {
+            // Give the server a moment to bind, then best-effort open the browser.
+            tokio::time::sleep(std::time::Duration::from_millis(600)).await;
+            let _ = open_browser(&url);
+        });
+    }
+
+    web::run_server(default_path, args.min_size, args.depth, args.port).await?;
+
     Ok(())
+}
+
+fn open_browser(url: &str) -> std::io::Result<()> {
+    #[cfg(target_os = "macos")]
+    let cmd = "open";
+    #[cfg(target_os = "linux")]
+    let cmd = "xdg-open";
+    #[cfg(target_os = "windows")]
+    let cmd = "explorer";
+
+    std::process::Command::new(cmd).arg(url).spawn().map(|_| ())
 }
