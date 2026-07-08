@@ -17,8 +17,8 @@
   flex-direction: column;
   border: 1px solid var(--border);
   border-radius: 0;
-  padding: 20px 22px;
-  min-height: 220px;
+  padding: 26px 28px;
+  min-height: 320px;
 }
 
 .metric-top {
@@ -32,9 +32,13 @@
   font-size: 10.5px; font-weight: 600; color: var(--text-faint);
   letter-spacing: 0.1em; text-transform: uppercase;
 }
+.metric-ind {
+  display: inline-block; width: 8px; height: 8px;
+  margin-right: 8px; vertical-align: middle;
+}
 
 .metric-value {
-  font-size: 26px;
+  font-size: 34px;
   font-weight: 600;
   letter-spacing: -0.02em;
   color: var(--text);
@@ -60,7 +64,7 @@
 .chart-wrap {
   position: relative;
   margin-top: auto;
-  height: 110px;
+  height: 175px;
   width: 100%;
 }
 .chart-wrap canvas { display: block; }

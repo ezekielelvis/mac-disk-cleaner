@@ -7,8 +7,14 @@
 import { subscribeMetrics, CAPACITY } from "../lib/metrics.js";
 import { fmtBytes, fmtRate, fmtPct } from "../lib/format.js";
 
-const INK = "#161616";
-const INK_SOFT = "#b8b8b8";
+// Per-metric indicator colors — each chart reads as its own signal.
+const COLORS = {
+  cpu: "#4f46e5",   // indigo
+  mem: "#16a34a",   // green
+  disk: "#d97706",  // amber
+  netRx: "#4f46e5", // indigo (download)
+  netTx: "#0891b2", // cyan   (upload)
+};
 const GRID = "#eeeeee";
 
 export async function mount(view) {
@@ -18,19 +24,19 @@ export async function mount(view) {
       <div class="sub">Live system &amp; storage metrics, updating every second.</div>
     </div>
     <div class="metric-grid">
-      ${card("cpu", "CPU Usage")}
-      ${card("mem", "Memory Usage")}
-      ${card("disk", "Disk Usage")}
+      ${card("cpu", "CPU Usage", COLORS.cpu)}
+      ${card("mem", "Memory Usage", COLORS.mem)}
+      ${card("disk", "Disk Usage", COLORS.disk)}
       ${netCard()}
     </div>
   `;
 
-  const cpuChart = lineChart(view.querySelector("#chart-cpu"), [series(INK, true)], 100);
-  const memChart = lineChart(view.querySelector("#chart-mem"), [series(INK, true)], 100);
-  const diskChart = lineChart(view.querySelector("#chart-disk"), [series(INK, true)], 100);
+  const cpuChart = lineChart(view.querySelector("#chart-cpu"), [series(COLORS.cpu, true)], 100);
+  const memChart = lineChart(view.querySelector("#chart-mem"), [series(COLORS.mem, true)], 100);
+  const diskChart = lineChart(view.querySelector("#chart-disk"), [series(COLORS.disk, true)], 100);
   const netChart = lineChart(
     view.querySelector("#chart-net"),
-    [series(INK, false), series(INK_SOFT, false)],
+    [series(COLORS.netRx, true), series(COLORS.netTx, true)],
     null
   );
 
@@ -74,13 +80,13 @@ export async function mount(view) {
   };
 }
 
-// A dataset spec: flat ink line, optional soft area fill, no point markers.
+// A dataset spec: colored line with a soft matching area fill, no point markers.
 function series(color, fill) {
   return {
     data: [],
     borderColor: color,
-    backgroundColor: fill ? "rgba(22,22,22,0.06)" : "transparent",
-    borderWidth: 1.5,
+    backgroundColor: fill ? rgba(color, 0.12) : "transparent",
+    borderWidth: 1.75,
     fill,
     tension: 0.3,
     pointRadius: 0,
@@ -112,11 +118,11 @@ function lineChart(canvas, datasets, yMax) {
   });
 }
 
-function card(id, title) {
+function card(id, title, color) {
   return `
     <div class="metric-card">
       <div class="metric-top">
-        <h3>${title}</h3>
+        <h3><i class="metric-ind" style="background:${color}"></i>${title}</h3>
         <div class="metric-value" id="val-${id}">—</div>
       </div>
       <div class="metric-sub" id="sub-${id}">&nbsp;</div>
@@ -128,13 +134,19 @@ function netCard() {
   return `
     <div class="metric-card">
       <div class="metric-top">
-        <h3>Network I/O</h3>
+        <h3><i class="metric-ind" style="background:${COLORS.netRx}"></i>Network I/O</h3>
         <div class="metric-value" id="val-net">—</div>
       </div>
       <div class="metric-sub metric-legend">
-        <span><i class="dot" style="background:${INK}"></i>DOWN <b id="net-down">—</b></span>
-        <span><i class="dot" style="background:${INK_SOFT}"></i>UP <b id="net-up">—</b></span>
+        <span><i class="dot" style="background:${COLORS.netRx}"></i>DOWN <b id="net-down">—</b></span>
+        <span><i class="dot" style="background:${COLORS.netTx}"></i>UP <b id="net-up">—</b></span>
       </div>
       <div class="chart-wrap"><canvas id="chart-net"></canvas></div>
     </div>`;
+}
+
+// #rrggbb -> rgba(...) with the given alpha (for soft area fills).
+function rgba(hex, a) {
+  const n = parseInt(hex.slice(1), 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }

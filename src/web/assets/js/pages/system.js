@@ -1,10 +1,15 @@
-// System page — a static-ish snapshot of OS, CPU, memory, disks and health,
-// refreshed every few seconds. All data comes from /api/system (sysinfo).
+// System page — OS, health, processor, memory and storage. System Health and
+// the Processor are shown as Chart.js bar charts. The DOM skeleton is built once
+// and then updated in place every few seconds, so the charts don't flicker.
+//
+/* global Chart */ // provided by the vendored UMD build loaded in index.html
 
 import { getSystem } from "../lib/api.js";
 import { fmtBytes, fmtUptime, fmtDate, fmtPct, esc } from "../lib/format.js";
 
 const POLL_MS = 3000;
+const GRID = "#eeeeee";
+const ACCENT = "#4f46e5";
 
 export async function mount(view) {
   view.innerHTML = `
@@ -15,32 +20,156 @@ export async function mount(view) {
     <div id="sys-body"><div class="empty">Loading system information…</div></div>
   `;
   const body = view.querySelector("#sys-body");
+  const charts = {};
+  let built = false;
 
   async function refresh() {
     let s;
-    try { s = await getSystem(); } catch (e) {
+    try {
+      s = await getSystem();
+    } catch (e) {
+      destroyCharts(charts);
+      built = false;
       body.innerHTML = `<div class="empty">Could not read system info: ${esc(e.message)}</div>`;
       return;
     }
-    body.innerHTML = render(s);
+    if (!built) {
+      body.innerHTML = skeleton(s);
+      createCharts(s, charts, body);
+      built = true;
+    }
+    apply(s, charts, body);
   }
 
   await refresh();
   const timer = setInterval(refresh, POLL_MS);
-  return () => clearInterval(timer);
+  return () => {
+    clearInterval(timer);
+    destroyCharts(charts);
+  };
 }
 
-function render(s) {
-  // OS information comes first, then hardware, memory, storage and health.
+// ---------- structure (built once) ----------
+function skeleton(s) {
   return `
     <div class="sys-grid">
-      ${osCard(s.os)}
-      ${healthCard(s.health, s.temperatures)}
+      <div class="card"><h3>Operating System</h3><div class="kv" id="os-kv"></div></div>
+      <div class="card health-card">
+        <div class="health-head"><h3>System Health</h3><span id="health-status"></span></div>
+        <div id="health-text"></div>
+        <div class="sys-chart health-chart"><canvas id="health-bar"></canvas></div>
+      </div>
     </div>
-    ${cpuCard(s.cpu, s.load)}
-    ${memoryCard(s.memory)}
-    ${disksCard(s.disks)}
+    <div class="card">
+      <h3>Processor</h3>
+      <div class="cpu-brand">${esc(s.cpu.brand || "Unknown CPU")}</div>
+      <div class="kv" id="cpu-kv"></div>
+      <div class="sys-chart core-chart"><canvas id="core-bar"></canvas></div>
+    </div>
+    <div class="card"><h3>Memory</h3><div class="mem-row" id="mem-body"></div></div>
+    <div class="card"><h3>Storage Devices</h3><div class="disks" id="disks-body"></div></div>
   `;
+}
+
+// ---------- charts ----------
+function healthValues(s) {
+  const maxDisk = (s.disks || []).reduce((m, d) => Math.max(m, d.percent || 0), 0);
+  return {
+    labels: ["CPU", "RAM", "Swap", "Storage"],
+    values: [s.cpu.usage || 0, s.memory.percent || 0, s.memory.swap_percent || 0, maxDisk],
+  };
+}
+
+function createCharts(s, charts, body) {
+  const hv = healthValues(s);
+  charts.health = new Chart(body.querySelector("#health-bar"), {
+    type: "bar",
+    data: {
+      labels: hv.labels,
+      datasets: [{ data: hv.values, backgroundColor: hv.values.map(barColor), borderWidth: 0, barThickness: 20 }],
+    },
+    options: barOpts("y"),
+  });
+
+  const cores = s.cpu.per_core || [];
+  charts.core = new Chart(body.querySelector("#core-bar"), {
+    type: "bar",
+    data: {
+      labels: cores.map((_, i) => `#${i}`),
+      datasets: [{ data: cores.map((v) => Math.min(100, v)), backgroundColor: ACCENT, borderWidth: 0 }],
+    },
+    options: barOpts("x"),
+  });
+}
+
+function barOpts(indexAxis) {
+  const pctAxis = {
+    min: 0, max: 100,
+    grid: { color: GRID }, border: { display: false },
+    ticks: { callback: (v) => `${v}%`, font: { size: 10 }, color: "#9a9a9a", stepSize: 25 },
+  };
+  const catAxis = {
+    grid: { display: false }, border: { display: false },
+    ticks: { font: { size: 11 }, color: "#626262" },
+  };
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    animation: false,
+    indexAxis,
+    scales: indexAxis === "y" ? { x: pctAxis, y: catAxis } : { y: pctAxis, x: catAxis },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: (ctx) => `${ctx.raw.toFixed(0)}%` } },
+    },
+  };
+}
+
+function destroyCharts(charts) {
+  Object.values(charts).forEach((c) => { try { c.destroy(); } catch (_) {} });
+}
+
+// ---------- per-poll updates ----------
+function apply(s, charts, body) {
+  body.querySelector("#os-kv").innerHTML = kvRows([
+    ["OS", s.os.name],
+    ["Version", s.os.os_version],
+    ["Kernel", s.os.kernel],
+    ["Architecture", s.os.arch],
+    ["Hostname", s.os.hostname],
+    ["Uptime", fmtUptime(s.os.uptime)],
+    ["Booted", fmtDate(s.os.boot_time)],
+  ]);
+
+  body.querySelector("#health-status").innerHTML = statusPill(s.health.status);
+  body.querySelector("#health-text").innerHTML = healthText(s.health);
+  const hv = healthValues(s);
+  charts.health.data.datasets[0].data = hv.values;
+  charts.health.data.datasets[0].backgroundColor = hv.values.map(barColor);
+  charts.health.update("none");
+
+  body.querySelector("#cpu-kv").innerHTML = kvRows([
+    ["Cores", `${s.cpu.physical_cores} physical · ${s.cpu.logical_cores} logical`],
+    ["Frequency", `${(s.cpu.frequency_mhz / 1000).toFixed(2)} GHz`],
+    ["Total load", fmtPct(s.cpu.usage)],
+    ["Load avg", `${s.load.one.toFixed(2)} · ${s.load.five.toFixed(2)} · ${s.load.fifteen.toFixed(2)}`],
+  ]);
+  const cores = s.cpu.per_core || [];
+  charts.core.data.labels = cores.map((_, i) => `#${i}`);
+  charts.core.data.datasets[0].data = cores.map((v) => Math.min(100, v));
+  charts.core.update("none");
+
+  body.querySelector("#mem-body").innerHTML =
+    meter("RAM", s.memory.used, s.memory.total, s.memory.percent, "var(--ink)") +
+    meter("Swap", s.memory.swap_used, s.memory.swap_total, s.memory.swap_percent, "var(--ink-soft)");
+
+  body.querySelector("#disks-body").innerHTML =
+    (s.disks || []).map(diskRow).join("") || `<div class="empty">No disks reported.</div>`;
+}
+
+// ---------- small render helpers ----------
+function kvRows(rows) {
+  return rows.map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v || "—")}</div>`).join("");
 }
 
 function statusPill(status) {
@@ -49,74 +178,10 @@ function statusPill(status) {
   return `<span class="pill ${cls}">${label}</span>`;
 }
 
-function healthCard(health, temps) {
-  const issues = (health.issues || []).length
+function healthText(health) {
+  return (health.issues || []).length
     ? `<ul class="issue-list">${health.issues.map((i) => `<li>${esc(i)}</li>`).join("")}</ul>`
     : `<div class="all-good">No problems detected.</div>`;
-  const chips = (temps || []).length
-    ? `<div class="temp-row">${temps
-        .slice(0, 8)
-        .map((t) => `<span class="temp-chip">${esc(t.label)} <b>${t.celsius.toFixed(0)}°C</b></span>`)
-        .join("")}</div>`
-    : "";
-  return `
-    <div class="card health-card">
-      <div class="health-head">
-        <h3>System Health</h3>
-        ${statusPill(health.status)}
-      </div>
-      ${issues}
-      ${chips}
-    </div>`;
-}
-
-function osCard(os) {
-  const rows = [
-    ["OS", os.name],
-    ["Version", os.os_version],
-    ["Kernel", os.kernel],
-    ["Architecture", os.arch],
-    ["Hostname", os.hostname],
-    ["Uptime", fmtUptime(os.uptime)],
-    ["Booted", fmtDate(os.boot_time)],
-  ];
-  return kvCard("Operating System", rows);
-}
-
-function cpuCard(cpu, load) {
-  const cores = (cpu.per_core || [])
-    .map(
-      (u, i) => `
-      <div class="core">
-        <div class="core-label">#${i}</div>
-        <div class="core-bar"><div class="core-fill" style="width:${Math.min(100, u).toFixed(0)}%"></div></div>
-        <div class="core-val">${fmtPct(u)}</div>
-      </div>`
-    )
-    .join("");
-  return `
-    <div class="card">
-      <h3>Processor</h3>
-      <div class="cpu-brand">${esc(cpu.brand || "Unknown CPU")}</div>
-      <div class="kv">
-        <div class="k">Cores</div><div class="v">${cpu.physical_cores} physical · ${cpu.logical_cores} logical</div>
-        <div class="k">Frequency</div><div class="v">${(cpu.frequency_mhz / 1000).toFixed(2)} GHz</div>
-        <div class="k">Total load</div><div class="v">${fmtPct(cpu.usage)}</div>
-        <div class="k">Load avg</div><div class="v">${load.one.toFixed(2)} · ${load.five.toFixed(2)} · ${load.fifteen.toFixed(2)}</div>
-      </div>
-      <div class="cores">${cores}</div>
-    </div>`;
-}
-
-function memoryCard(m) {
-  return `
-    <div class="card">
-      <h3>Memory</h3>
-      <div class="mem-row">
-        ${meter("RAM", m.used, m.total, m.percent, "var(--ink)")}
-        ${meter("Swap", m.swap_used, m.swap_total, m.swap_percent, "var(--ink-soft)")}
-      </div>
-    </div>`;
 }
 
 function meter(label, used, total, pct, color) {
@@ -130,32 +195,20 @@ function meter(label, used, total, pct, color) {
     </div>`;
 }
 
-function disksCard(disks) {
-  const rows = (disks || [])
-    .map(
-      (d) => `
-      <div class="disk-row">
-        <div class="disk-main">
-          <div class="disk-mount mono">${esc(d.mount)}</div>
-          <div class="disk-meta">${esc(d.fs)} · ${esc(d.kind)} · ${esc(d.name) || "disk"}</div>
-        </div>
-        <div class="disk-bar"><div class="fill" style="width:${Math.min(100, d.percent)}%;background:${barColor(d.percent)}"></div></div>
-        <div class="disk-nums">${fmtBytes(d.used)} / ${fmtBytes(d.total)} <span class="disk-pct">${fmtPct(d.percent)}</span></div>
-      </div>`
-    )
-    .join("") || `<div class="empty">No disks reported.</div>`;
-  return `<div class="card"><h3>Storage Devices</h3><div class="disks">${rows}</div></div>`;
+function diskRow(d) {
+  return `
+    <div class="disk-row">
+      <div class="disk-main">
+        <div class="disk-mount mono">${esc(d.mount)}</div>
+        <div class="disk-meta">${esc(d.fs)} · ${esc(d.kind)} · ${esc(d.name) || "disk"}</div>
+      </div>
+      <div class="disk-bar"><div class="fill" style="width:${Math.min(100, d.percent)}%;background:${barColor(d.percent)}"></div></div>
+      <div class="disk-nums">${fmtBytes(d.used)} / ${fmtBytes(d.total)} <span class="disk-pct">${fmtPct(d.percent)}</span></div>
+    </div>`;
 }
 
 function barColor(pct) {
-  if (pct >= 90) return "var(--red)";
-  if (pct >= 75) return "var(--amber)";
-  return "var(--green)";
-}
-
-function kvCard(title, rows) {
-  const body = rows
-    .map(([k, v]) => `<div class="k">${esc(k)}</div><div class="v">${esc(v || "—")}</div>`)
-    .join("");
-  return `<div class="card"><h3>${esc(title)}</h3><div class="kv">${body}</div></div>`;
+  if (pct >= 90) return "#dc2626";
+  if (pct >= 75) return "#d97706";
+  return "#16a34a";
 }

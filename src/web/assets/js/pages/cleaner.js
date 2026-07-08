@@ -1,8 +1,23 @@
-// Cleaner page — scan a path, review a categorized breakdown, and delete files.
-// This is the original Disk Cleaner workflow, adapted into a routed page.
+// Cleaner page — scan a path, then explore results visually:
+//
+//   home  →  scanning (animated polar loader)  →  overview (interactive polar of
+//   categories)  →  detail (radar of files + interactive polar of folders, with
+//   the smart selection + delete tools).
+//
+// Clicking a slice on the overview polar drills into that category. On the
+// detail page, clicking a folder slice filters the file list to that folder.
+//
+/* global Chart */ // provided by the vendored UMD build loaded in index.html
 
 import { getConfig, startScan, getResults, deletePaths, toast } from "../lib/api.js";
 import { fmtBytes, esc } from "../lib/format.js";
+
+// Fallback palette for folder slices (categories carry their own colors).
+const PALETTE = [
+  "#4f46e5", "#16a34a", "#d97706", "#0891b2", "#db2777",
+  "#7c3aed", "#0d9488", "#dc2626", "#ca8a04", "#2563eb",
+];
+const GRID = "#eeeeee";
 
 export async function mount(view) {
   const state = {
@@ -14,7 +29,11 @@ export async function mount(view) {
     maxDepth: 0,
     results: null,
     selected: new Set(),
-    es: null, // active EventSource during a scan
+    es: null,          // active EventSource during a scan
+    charts: [],        // live Chart.js instances to tear down
+    scanTimer: null,   // animation interval for the scanning polar
+    detailCategory: null, // category name currently drilled into
+    folderFilter: null,   // directory path narrowing the detail file list
   };
 
   view.innerHTML = `<div class="empty">Loading…</div>`;
@@ -29,6 +48,13 @@ export async function mount(view) {
   state.maxDepth = state.config.max_depth;
   state.customPath = state.config.default_path;
   renderHome();
+
+  // ---------- chart lifecycle ----------
+  function destroyCharts() {
+    state.charts.forEach((c) => { try { c.destroy(); } catch (_) {} });
+    state.charts = [];
+  }
+  function track(chart) { state.charts.push(chart); return chart; }
 
   // ---------- storage gauge ----------
   function gaugeHtml(storage) {
@@ -58,6 +84,7 @@ export async function mount(view) {
   }
 
   function renderHome() {
+    destroyCharts();
     buildOptions();
     const cards = state.options
       .map(
@@ -125,9 +152,10 @@ export async function mount(view) {
   }
 
   function renderScanning(path) {
+    destroyCharts();
     view.innerHTML = `
       <div class="scanning">
-        <div class="spinner"></div>
+        <div class="scan-chart"><canvas id="scan-polar"></canvas></div>
         <h2>Scanning…</h2>
         <div class="scan-stats">
           <div class="scan-stat"><div class="num" id="s-files">0</div><div class="lbl">files</div></div>
@@ -136,6 +164,37 @@ export async function mount(view) {
         </div>
         <div class="scan-path" id="s-path">${esc(path)}</div>
       </div>`;
+
+    // Animated polar loader: segments pulse while the scan runs. Replaced by the
+    // real, interactive category polar once results are in.
+    const n = 7;
+    const chart = track(new Chart(view.querySelector("#scan-polar"), {
+      type: "polarArea",
+      data: {
+        labels: Array.from({ length: n }, () => ""),
+        datasets: [{
+          data: randData(n),
+          backgroundColor: PALETTE.slice(0, n).map((c) => hexToRgba(c, 0.55)),
+          borderColor: PALETTE.slice(0, n),
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        animation: { duration: 650 },
+        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID } } },
+      },
+    }));
+    state.scanTimer = setInterval(() => {
+      chart.data.datasets[0].data = randData(n);
+      chart.update();
+    }, 700);
+  }
+
+  function stopScanAnim() {
+    if (state.scanTimer) { clearInterval(state.scanTimer); state.scanTimer = null; }
   }
 
   function streamProgress() {
@@ -151,9 +210,9 @@ export async function mount(view) {
         view.querySelector("#s-size").textContent = fmtBytes(p.size);
         if (p.current_path) view.querySelector("#s-path").textContent = p.current_path;
       }
-      if (p.complete) { es.close(); state.es = null; loadResults(); }
+      if (p.complete) { es.close(); state.es = null; stopScanAnim(); loadResults(); }
     };
-    es.onerror = () => { es.close(); state.es = null; loadResults(); };
+    es.onerror = () => { es.close(); state.es = null; stopScanAnim(); loadResults(); };
   }
 
   // ---------- results ----------
@@ -166,39 +225,16 @@ export async function mount(view) {
       return;
     }
     state.selected.clear();
-    renderResults();
+    state.detailCategory = null;
+    state.folderFilter = null;
+    renderOverview();
   }
 
-  function renderResults() {
+  // ---------- overview: interactive polar of categories ----------
+  function renderOverview() {
+    destroyCharts();
     const r = state.results;
-    const cats = r.categories
-      .map((c) => {
-        const pct = r.total_size > 0 ? (c.size / r.total_size) * 100 : 0;
-        const chip = c.safe ? `<span class="pill green">safe</span>` : `<span class="pill amber">review</span>`;
-        return `
-        <div class="catrow">
-          <div class="catrow-top">
-            <span>${esc(c.name)} ${chip} <span class="sz">· ${c.count} items</span></span>
-            <span class="sz">${fmtBytes(c.size)} · ${pct.toFixed(0)}%</span>
-          </div>
-          <div class="catbar"><div class="catbar-fill" style="width:${pct}%;background:${c.color}"></div></div>
-        </div>`;
-      })
-      .join("") || `<div class="empty">No categories.</div>`;
-
-    const maxDir = r.directories.reduce((m, d) => Math.max(m, d.size), 0) || 1;
-    const dirs = r.directories
-      .slice(0, 12)
-      .map((d) => {
-        const pct = (d.size / maxDir) * 100;
-        return `
-        <div class="catrow">
-          <div class="catrow-top"><span class="mono">${esc(d.name)}</span><span class="sz">${fmtBytes(d.size)}</span></div>
-          <div class="catbar"><div class="catbar-fill" style="width:${pct}%;background:var(--accent)"></div></div>
-        </div>`;
-      })
-      .join("") || `<div class="empty">No sub-directories.</div>`;
-
+    const cats = r.categories.filter((c) => c.size > 0);
     const recs = r.recommendations.map((x) => `<li>${esc(x)}</li>`).join("");
 
     view.innerHTML = `
@@ -212,13 +248,79 @@ export async function mount(view) {
         <button type="button" class="btn btn-ghost btn-sm" id="rescan-btn">← New scan</button>
       </div>
       ${gaugeHtml(r.storage)}
-      <div class="grid2">
-        <div class="card"><h3>Category breakdown</h3>${cats}</div>
-        <div class="card"><h3>Top directories</h3>${dirs}</div>
-      </div>
-      <div class="card recs"><h3>Recommendations</h3><ul>${recs}</ul></div>
       <div class="card">
-        <h3>Largest files (${r.files.length})</h3>
+        <h3>Categories — click a slice to explore</h3>
+        <div class="polar-wrap"><canvas id="cat-polar"></canvas></div>
+      </div>
+      <div class="card recs"><h3>Recommendations</h3><ul>${recs || "<li>Nothing to flag.</li>"}</ul></div>`;
+
+    view.querySelector("#rescan-btn").addEventListener("click", renderHome);
+
+    if (!cats.length) return;
+    track(new Chart(view.querySelector("#cat-polar"), {
+      type: "polarArea",
+      data: {
+        labels: cats.map((c) => c.name),
+        datasets: [{
+          data: cats.map((c) => c.size),
+          backgroundColor: cats.map((c) => hexToRgba(c.color, 0.6)),
+          borderColor: cats.map((c) => c.color),
+          borderWidth: 1,
+        }],
+      },
+      options: {
+        responsive: true,
+        maintainAspectRatio: false,
+        plugins: {
+          legend: { position: "right", labels: { boxWidth: 12, font: { size: 11 } } },
+          tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${fmtBytes(ctx.raw)}` } },
+        },
+        scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID } } },
+        onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
+        onClick: (evt, els) => {
+          if (!els.length) return;
+          state.detailCategory = cats[els[0].index].name;
+          state.folderFilter = null;
+          renderDetail();
+        },
+      },
+    }));
+  }
+
+  // ---------- detail: radar of files + interactive polar of folders ----------
+  function renderDetail() {
+    destroyCharts();
+    const catName = state.detailCategory;
+    const catFiles = state.results.files.filter((f) => f.category === catName);
+    const files = state.folderFilter
+      ? catFiles.filter((f) => folderOf(f.path) === state.folderFilter)
+      : catFiles;
+
+    const catSize = catFiles.reduce((s, f) => s + f.size, 0);
+    const filterChip = state.folderFilter
+      ? `<span class="pill" id="clear-folder" style="cursor:pointer">${esc(baseName(state.folderFilter))} ✕</span>`
+      : "";
+
+    view.innerHTML = `
+      <div class="page-head page-head-row">
+        <div>
+          <h1>${esc(catName)}</h1>
+          <div class="sub">${catFiles.length.toLocaleString()} files · ${fmtBytes(catSize)} ${filterChip}</div>
+        </div>
+        <button type="button" class="btn btn-ghost btn-sm" id="back-btn">← Back to overview</button>
+      </div>
+      <div class="grid2">
+        <div class="card">
+          <h3>Files &amp; sizes</h3>
+          <div class="polar-wrap"><canvas id="file-radar"></canvas></div>
+        </div>
+        <div class="card">
+          <h3>Folders — click to filter</h3>
+          <div class="polar-wrap"><canvas id="folder-polar"></canvas></div>
+        </div>
+      </div>
+      <div class="card">
+        <h3>Files (${files.length})</h3>
         <div class="toolbar">
           <button type="button" class="btn btn-ghost btn-sm" id="sel-safe">Select safe</button>
           <button type="button" class="btn btn-ghost btn-sm" id="sel-all">Select all</button>
@@ -229,28 +331,90 @@ export async function mount(view) {
         </div>
         <div class="table-wrap">
           <table>
-            <thead><tr><th></th><th>Name</th><th>Category</th><th>Modified</th><th style="text-align:right">Size</th></tr></thead>
+            <thead><tr><th></th><th>Name</th><th>Modified</th><th style="text-align:right">Size</th></tr></thead>
             <tbody id="file-rows"></tbody>
           </table>
         </div>
       </div>`;
 
-    view.querySelector("#rescan-btn").addEventListener("click", renderHome);
-    view.querySelector("#sel-safe").addEventListener("click", () => {
-      r.files.forEach((f) => { if (f.safe) state.selected.add(f.path); });
-      renderRows();
-    });
-    view.querySelector("#sel-all").addEventListener("click", () => {
-      r.files.forEach((f) => state.selected.add(f.path));
-      renderRows();
-    });
-    view.querySelector("#sel-clear").addEventListener("click", () => { state.selected.clear(); renderRows(); });
+    view.querySelector("#back-btn").addEventListener("click", renderOverview);
+    const clearFolder = view.querySelector("#clear-folder");
+    if (clearFolder) clearFolder.addEventListener("click", () => { state.folderFilter = null; renderDetail(); });
+
+    // radar: the biggest files in the current view, by size
+    const topFiles = files.slice().sort((a, b) => b.size - a.size).slice(0, 7);
+    if (topFiles.length) {
+      track(new Chart(view.querySelector("#file-radar"), {
+        type: "radar",
+        data: {
+          labels: topFiles.map((f) => truncate(f.name, 16)),
+          datasets: [{
+            label: "Size",
+            data: topFiles.map((f) => f.size),
+            backgroundColor: "rgba(79,70,229,0.15)",
+            borderColor: "#4f46e5",
+            borderWidth: 1.5,
+            pointBackgroundColor: "#4f46e5",
+            pointRadius: 3,
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { display: false },
+            tooltip: { callbacks: { label: (ctx) => fmtBytes(topFiles[ctx.dataIndex].size) } },
+          },
+          scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID }, pointLabels: { font: { size: 9 } } } },
+        },
+      }));
+    }
+
+    // folders: aggregate this category's files by parent directory, interactive
+    const folders = foldersFor(catFiles);
+    if (folders.length) {
+      track(new Chart(view.querySelector("#folder-polar"), {
+        type: "polarArea",
+        data: {
+          labels: folders.map((d) => d.name),
+          datasets: [{
+            data: folders.map((d) => d.size),
+            backgroundColor: folders.map((d, i) => hexToRgba(colorFor(d.dir, i), state.folderFilter === d.dir ? 0.9 : 0.55)),
+            borderColor: folders.map((d, i) => colorFor(d.dir, i)),
+            borderWidth: folders.map((d) => (state.folderFilter === d.dir ? 2 : 1)),
+          }],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: {
+            legend: { position: "right", labels: { boxWidth: 12, font: { size: 11 } } },
+            tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${fmtBytes(ctx.raw)}` } },
+          },
+          scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID } } },
+          onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
+          onClick: (evt, els) => {
+            if (!els.length) return;
+            const dir = folders[els[0].index].dir;
+            state.folderFilter = state.folderFilter === dir ? null : dir; // toggle
+            renderDetail();
+          },
+        },
+      }));
+    }
+
+    // smart selection over the currently visible files
+    const selSafe = view.querySelector("#sel-safe");
+    const selAll = view.querySelector("#sel-all");
+    selSafe.addEventListener("click", () => { files.forEach((f) => { if (f.safe) state.selected.add(f.path); }); renderRows(files); });
+    selAll.addEventListener("click", () => { files.forEach((f) => state.selected.add(f.path)); renderRows(files); });
+    view.querySelector("#sel-clear").addEventListener("click", () => { files.forEach((f) => state.selected.delete(f.path)); renderRows(files); });
     view.querySelector("#del-btn").addEventListener("click", confirmDelete);
-    renderRows();
+    renderRows(files);
   }
 
-  function renderRows() {
-    const rows = state.results.files
+  function renderRows(files) {
+    const rows = files
       .map((f) => {
         const checked = state.selected.has(f.path) ? "checked" : "";
         const flags = [f.is_system ? "sys" : "", f.is_hidden ? "hidden" : ""].filter(Boolean).join(" ");
@@ -258,14 +422,13 @@ export async function mount(view) {
         <tr>
           <td><input type="checkbox" data-path="${esc(f.path)}" ${checked} /></td>
           <td class="name" title="${esc(f.path)}">${esc(f.name)} <span class="flag">${flags}</span></td>
-          <td><span class="cat-dot" style="background:${f.color}"></span>${esc(f.category)}</td>
           <td class="mono">${esc(f.modified)}</td>
           <td class="size">${fmtBytes(f.size)}</td>
         </tr>`;
       })
       .join("");
     view.querySelector("#file-rows").innerHTML =
-      rows || `<tr><td colspan="5" class="empty">No files above the size threshold.</td></tr>`;
+      rows || `<tr><td colspan="4" class="empty">No files here.</td></tr>`;
 
     view.querySelectorAll('#file-rows input[type="checkbox"]').forEach((cb) => {
       cb.addEventListener("change", () => {
@@ -286,8 +449,10 @@ export async function mount(view) {
 
   function updateSelCount() {
     const n = state.selected.size;
-    view.querySelector("#sel-count").textContent = n ? `${n} selected · ${fmtBytes(selectedSize())}` : "";
-    view.querySelector("#del-btn").disabled = n === 0;
+    const el = view.querySelector("#sel-count");
+    if (el) el.textContent = n ? `${n} selected · ${fmtBytes(selectedSize())}` : "";
+    const del = view.querySelector("#del-btn");
+    if (del) del.disabled = n === 0;
   }
 
   // ---------- delete ----------
@@ -316,15 +481,54 @@ export async function mount(view) {
       const res = await deletePaths(paths);
       toast(`Deleted ${res.deleted}/${paths.length} · freed ${fmtBytes(res.freed)}`, "success");
       state.selected.clear();
+      // Reload the fresh result set, returning to the overview.
       await loadResults();
     } catch (e) {
       toast("Delete failed: " + e.message, "error");
     }
   }
 
-  // cleanup on navigation away: stop any in-flight scan stream + hide modal
+  // ---------- small helpers ----------
+  function foldersFor(catFiles) {
+    const map = new Map();
+    catFiles.forEach((f) => {
+      const dir = folderOf(f.path);
+      const cur = map.get(dir) || { dir, name: baseName(dir), size: 0, count: 0 };
+      cur.size += f.size; cur.count++;
+      map.set(dir, cur);
+    });
+    return [...map.values()].sort((a, b) => b.size - a.size).slice(0, 8);
+  }
+
+  // cleanup on navigation away: stop scan stream, animation, charts + modal
   return () => {
     if (state.es) { state.es.close(); state.es = null; }
+    stopScanAnim();
+    destroyCharts();
     document.getElementById("modal").classList.add("hidden");
   };
+}
+
+// ---------- module-level pure helpers ----------
+function folderOf(path) {
+  const i = path.lastIndexOf("/");
+  return i > 0 ? path.slice(0, i) : "/";
+}
+function baseName(path) {
+  const parts = path.split("/").filter(Boolean);
+  return parts.length ? parts[parts.length - 1] : path;
+}
+function truncate(s, n) {
+  return s.length > n ? s.slice(0, n - 1) + "…" : s;
+}
+function colorFor(_dir, i) {
+  return PALETTE[i % PALETTE.length];
+}
+function randData(n) {
+  return Array.from({ length: n }, () => 4 + Math.random() * 10);
+}
+function hexToRgba(hex, a) {
+  const s = hex.replace("#", "");
+  const n = parseInt(s.length === 3 ? s.replace(/(.)/g, "$1$1") : s, 16);
+  return `rgba(${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}, ${a})`;
 }

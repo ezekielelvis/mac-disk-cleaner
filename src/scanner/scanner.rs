@@ -131,52 +131,52 @@ impl Scanner {
         
         // Check path patterns first
         if path_str.contains("/Caches/") || path_str.contains("/cache/") || name == "Cache" || name == "Caches" {
-            return "🗑️ Cache";
+            return "Cache";
         }
         if path_str.contains("/Temp/") || path_str.contains("/tmp/") || name.starts_with("tmp") {
-            return "🌡️ Temp Files";
+            return "Temp Files";
         }
         if name == "node_modules" || path_str.contains("/node_modules/") {
-            return "📦 node_modules";
+            return "node_modules";
         }
         if path_str.contains("/target/") && (path_str.contains("/debug/") || path_str.contains("/release/")) {
-            return "🔨 Build Artifacts";
+            return "Build Artifacts";
         }
         if path_str.contains("/.cargo/") || path_str.contains("/.npm/") || path_str.contains("/.gradle/") ||
            path_str.contains("/CocoaPods/") || path_str.contains("/.m2/") || path_str.contains("/pip/") {
-            return "📥 Package Cache";
+            return "Package Cache";
         }
         if path_str.contains("/Library/") && !is_system {
-            return "📚 Library Files";
+            return "Library Files";
         }
         if path_str.contains("/Downloads/") {
-            return "⬇️ Downloads";
+            return "Downloads";
         }
         if path_str.contains("/Documents/") {
-            return "📄 Documents";
+            return "Documents";
         }
         
         // Check by extension
         match ext.as_str() {
-            "log" | "logs" => return "📜 Log Files",
+            "log" | "logs" => return "Log Files",
             "mp4" | "mkv" | "avi" | "mov" | "mp3" | "wav" | "flac" | "m4a" | "aac" |
             "jpg" | "jpeg" | "png" | "gif" | "bmp" | "tiff" | "webp" | "heic" |
-            "psd" | "ai" | "svg" => return "🎬 Media",
-            "zip" | "tar" | "gz" | "rar" | "7z" | "bz2" | "xz" | "dmg" | "iso" => return "🗜️ Archives",
-            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "rtf" | "odt" => return "📄 Documents",
-            "o" | "obj" | "class" | "pyc" | "pyo" => return "🔨 Build Artifacts",
+            "psd" | "ai" | "svg" => return "Media",
+            "zip" | "tar" | "gz" | "rar" | "7z" | "bz2" | "xz" | "dmg" | "iso" => return "Archives",
+            "pdf" | "doc" | "docx" | "xls" | "xlsx" | "ppt" | "pptx" | "txt" | "rtf" | "odt" => return "Documents",
+            "o" | "obj" | "class" | "pyc" | "pyo" => return "Build Artifacts",
             _ => {}
         }
         
         // Check flags
         if is_system {
-            return "⚙️ System Files";
+            return "System Files";
         }
         if is_hidden {
-            return "👁️ Hidden Files";
+            return "Hidden Files";
         }
         
-        "📁 Regular"
+        "Regular"
     }
 
     /// Full scan - scans EVERYTHING, tracks inodes to avoid double-counting hard links

@@ -246,46 +246,46 @@ fn build_recommendations(categories: &[CategoryDto], directories: &[DirDto]) -> 
 
     if let Some(top) = directories.first() {
         if top.size > 0 {
-            recs.push(format!("📂 Largest directory: {} ({})", top.name, human(top.size)));
+            recs.push(format!("Largest directory: {} ({})", top.name, human(top.size)));
         }
     }
 
     let find = |needle: &str| categories.iter().find(|c| c.name.contains(needle));
 
     if let Some(c) = find("System Files") {
-        recs.push(format!("🛑 {} system files found — DO NOT DELETE", c.count));
+        recs.push(format!("{} system files found — DO NOT DELETE", c.count));
     }
     if let Some(c) = find("node_modules") {
         recs.push(format!(
-            "📦 {} node_modules entries using {} — safe to delete",
+            "{} node_modules entries using {} — safe to delete",
             c.count,
             human(c.size)
         ));
     }
     if let Some(c) = find("Build Artifacts") {
-        recs.push(format!("🔨 Build artifacts using {} — can be regenerated", human(c.size)));
+        recs.push(format!("Build artifacts using {} — can be regenerated", human(c.size)));
     }
     if let Some(c) = find("Cache") {
-        recs.push(format!("🗑️ Cache files using {} — safe to delete", human(c.size)));
+        recs.push(format!("Cache files using {} — safe to delete", human(c.size)));
     }
     if let Some(c) = find("Package Cache") {
-        recs.push(format!("📥 Package cache using {} — can be re-downloaded", human(c.size)));
+        recs.push(format!("Package cache using {} — can be re-downloaded", human(c.size)));
     }
     if let Some(c) = find("Log Files") {
         if c.size > 50 * 1024 * 1024 {
-            recs.push(format!("📜 Log files using {} — consider cleaning", human(c.size)));
+            recs.push(format!("Log files using {} — consider cleaning", human(c.size)));
         }
     }
     if let Some(c) = find("Hidden Files") {
         recs.push(format!(
-            "👁️ {} hidden files using {} — review carefully",
+            "{} hidden files using {} — review carefully",
             c.count,
             human(c.size)
         ));
     }
 
     if recs.is_empty() {
-        recs.push("✨ Nothing obvious to clean up here.".to_string());
+        recs.push("Nothing obvious to clean up here.".to_string());
     }
     recs
 }

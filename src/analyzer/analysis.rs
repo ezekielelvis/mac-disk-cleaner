@@ -78,7 +78,7 @@ impl Analyzer {
         if !large_dirs.is_empty() {
             let top_dir = &large_dirs[0];
             recommendations.push(format!(
-                "📂 Largest directory: {} ({})",
+                "Largest directory: {} ({})",
                 top_dir.0,
                 humansize::format_size(top_dir.1, humansize::DECIMAL)
             ));
@@ -95,7 +95,7 @@ impl Analyzer {
         // Count system files
         if let Some(system) = groups.get(&FileCategory::SystemFiles) {
             recommendations.push(format!(
-                "🛑 {} system files found - DO NOT DELETE",
+                "{} system files found - DO NOT DELETE",
                 system.len()
             ));
         }
@@ -104,7 +104,7 @@ impl Analyzer {
         if let Some(hidden) = groups.get(&FileCategory::HiddenFiles) {
             let total_size: u64 = hidden.iter().map(|e| e.size).sum();
             recommendations.push(format!(
-                "👁️ {} hidden files using {} - review carefully",
+                "{} hidden files using {} - review carefully",
                 hidden.len(),
                 humansize::format_size(total_size, humansize::DECIMAL)
             ));
@@ -113,7 +113,7 @@ impl Analyzer {
         if let Some(node_modules) = groups.get(&FileCategory::NodeModules) {
             let total_size: u64 = node_modules.iter().map(|e| e.size).sum();
             recommendations.push(format!(
-                "📦 {} node_modules entries using {} - safe to delete",
+                "{} node_modules entries using {} - safe to delete",
                 node_modules.len(),
                 humansize::format_size(total_size, humansize::DECIMAL)
             ));
@@ -122,7 +122,7 @@ impl Analyzer {
         if let Some(cache) = groups.get(&FileCategory::Cache) {
             let total_size: u64 = cache.iter().map(|e| e.size).sum();
             recommendations.push(format!(
-                "🗑️ Cache files using {} - safe to delete",
+                "Cache files using {} - safe to delete",
                 humansize::format_size(total_size, humansize::DECIMAL)
             ));
         }
@@ -130,7 +130,7 @@ impl Analyzer {
         if let Some(builds) = groups.get(&FileCategory::BuildArtifacts) {
             let total_size: u64 = builds.iter().map(|e| e.size).sum();
             recommendations.push(format!(
-                "🔨 Build artifacts using {} - can be regenerated",
+                "Build artifacts using {} - can be regenerated",
                 humansize::format_size(total_size, humansize::DECIMAL)
             ));
         }
@@ -139,7 +139,7 @@ impl Analyzer {
             let total_size: u64 = logs.iter().map(|e| e.size).sum();
             if total_size > 50 * 1024 * 1024 {
                 recommendations.push(format!(
-                    "📜 Log files using {} - consider cleaning",
+                    "Log files using {} - consider cleaning",
                     humansize::format_size(total_size, humansize::DECIMAL)
                 ));
             }
@@ -147,7 +147,7 @@ impl Analyzer {
 
         if let Some(duplicates) = groups.get(&FileCategory::DuplicateName) {
             recommendations.push(format!(
-                "👯 {} files with duplicate names - review for duplicates",
+                "{} files with duplicate names - review for duplicates",
                 duplicates.len()
             ));
         }
@@ -156,7 +156,7 @@ impl Analyzer {
             let total_size: u64 = downloads.iter().map(|e| e.size).sum();
             if total_size > 500 * 1024 * 1024 {
                 recommendations.push(format!(
-                    "⬇️ Downloads using {} - review and clean",
+                    "Downloads using {} - review and clean",
                     humansize::format_size(total_size, humansize::DECIMAL)
                 ));
             }
@@ -166,7 +166,7 @@ impl Analyzer {
             let total_size: u64 = archives.iter().map(|e| e.size).sum();
             if total_size > 200 * 1024 * 1024 {
                 recommendations.push(format!(
-                    "🗜️ Archives using {} - may be extractable or deletable",
+                    "Archives using {} - may be extractable or deletable",
                     humansize::format_size(total_size, humansize::DECIMAL)
                 ));
             }
