@@ -312,10 +312,7 @@ impl Scanner {
         let total_files = files_count.load(Ordering::Relaxed);
         let total_dirs = dirs_count.load(Ordering::Relaxed);
         let total_sz = total_size.load(Ordering::Relaxed);
-        
-        let hidden_count = final_entries.iter().filter(|e| e.is_hidden).count();
-        let system_count = final_entries.iter().filter(|e| e.is_system).count();
-        
+
         {
             let mut prog = progress.lock().await;
             prog.is_complete = true;
@@ -325,14 +322,7 @@ impl Scanner {
             prog.entries = final_entries.iter().take(20).cloned().collect();
         }
 
-        Ok(ScanResult {
-            entries: final_entries,
-            total_size: total_sz,
-            total_files,
-            total_dirs,
-            hidden_count,
-            system_count,
-        })
+        Ok(ScanResult { entries: final_entries })
     }
 
     /// Scan everything using parallel workers with inode tracking

@@ -5,14 +5,6 @@ use std::collections::HashMap;
 pub struct ClassificationRules;
 
 impl ClassificationRules {
-    /// Classify a single entry, detecting duplicate names by re-scanning
-    /// `all_entries` (O(n) per call). Prefer [`classify_with_name_counts`] when
-    /// categorizing a whole batch — it's O(1) per entry given a prebuilt map.
-    pub fn classify(entry: &FileEntry, all_entries: &[FileEntry]) -> FileCategory {
-        let name_counts = Self::build_name_counts(all_entries);
-        Self::classify_with_name_counts(entry, &name_counts)
-    }
-
     /// Build a map of file name -> number of non-directory entries with that
     /// name. Computed once per batch so duplicate detection stays O(n) overall.
     pub fn build_name_counts(entries: &[FileEntry]) -> HashMap<String, usize> {
