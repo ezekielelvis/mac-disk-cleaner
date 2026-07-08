@@ -1,11 +1,12 @@
 use super::dto::*;
+use super::sysmon::SysMonitor;
 use crate::analyzer::{Analyzer, FileCategory};
 use crate::cleaner::Cleaner;
 use crate::models::{FileEntry, ScanProgress, StorageInfo};
 use crate::scanner::Scanner;
 use anyhow::Result;
 use axum::{
-    extract::State,
+    extract::{Path as AxumPath, State},
     http::{header, StatusCode},
     response::{
         sse::{Event, KeepAlive, Sse},
@@ -33,6 +34,7 @@ struct Inner {
     progress: Arc<Mutex<ScanProgress>>,
     results: Mutex<Option<ResultsState>>,
     scanning: AtomicBool,
+    monitor: Mutex<SysMonitor>,
     default_path: PathBuf,
     default_min_size: u64,
     default_depth: usize,
@@ -54,6 +56,7 @@ pub async fn run_server(
             progress: Arc::new(Mutex::new(ScanProgress::default())),
             results: Mutex::new(None),
             scanning: AtomicBool::new(false),
+            monitor: Mutex::new(SysMonitor::new()),
             default_path,
             default_min_size: min_size,
             default_depth: depth,
@@ -62,9 +65,10 @@ pub async fn run_server(
 
     let app = Router::new()
         .route("/", get(index))
-        .route("/app.js", get(app_js))
-        .route("/style.css", get(style_css))
+        .route("/assets/*path", get(serve_asset))
         .route("/api/config", get(get_config))
+        .route("/api/metrics", get(get_metrics))
+        .route("/api/system", get(get_system))
         .route("/api/scan", post(post_scan))
         .route("/api/scan/stream", get(scan_stream))
         .route("/api/results", get(get_results))
@@ -73,29 +77,68 @@ pub async fn run_server(
 
     let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
     let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("\n  🧹 Disk Cleaner is running at http://{addr}\n");
+    println!("\n  Disk Cleaner is running at http://{addr}\n");
     axum::serve(listener, app).await?;
     Ok(())
 }
 
 // ---- static assets ----
+//
+// The frontend is split into per-page CSS and ES-module JS files. They are
+// embedded at compile time and served through one handler keyed by path, so
+// adding a component/page only means adding a line to `asset()`.
 
 async fn index() -> Html<&'static str> {
     Html(include_str!("assets/index.html"))
 }
 
-async fn app_js() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "application/javascript; charset=utf-8")],
-        include_str!("assets/app.js"),
-    )
+const CSS: &str = "text/css; charset=utf-8";
+const JS: &str = "application/javascript; charset=utf-8";
+
+/// Map an `/assets/<path>` request to its embedded (content-type, body).
+fn asset(path: &str) -> Option<(&'static str, &'static str)> {
+    Some(match path {
+        // stylesheets — one global base plus one file per page (non-modular)
+        "css/base.css" => (CSS, include_str!("assets/css/base.css")),
+        "css/dashboard.css" => (CSS, include_str!("assets/css/dashboard.css")),
+        "css/system.css" => (CSS, include_str!("assets/css/system.css")),
+        "css/cleaner.css" => (CSS, include_str!("assets/css/cleaner.css")),
+        // third-party (vendored so the app stays self-contained offline)
+        "js/vendor/chart.umd.js" => (JS, include_str!("assets/js/vendor/chart.umd.js")),
+        // app shell + shared libs
+        "js/app.js" => (JS, include_str!("assets/js/app.js")),
+        "js/lib/api.js" => (JS, include_str!("assets/js/lib/api.js")),
+        "js/lib/format.js" => (JS, include_str!("assets/js/lib/format.js")),
+        "js/lib/metrics.js" => (JS, include_str!("assets/js/lib/metrics.js")),
+        // components
+        "js/components/sidebar.js" => (JS, include_str!("assets/js/components/sidebar.js")),
+        // pages
+        "js/pages/dashboard.js" => (JS, include_str!("assets/js/pages/dashboard.js")),
+        "js/pages/system.js" => (JS, include_str!("assets/js/pages/system.js")),
+        "js/pages/cleaner.js" => (JS, include_str!("assets/js/pages/cleaner.js")),
+        _ => return None,
+    })
 }
 
-async fn style_css() -> impl IntoResponse {
-    (
-        [(header::CONTENT_TYPE, "text/css; charset=utf-8")],
-        include_str!("assets/style.css"),
-    )
+async fn serve_asset(AxumPath(path): AxumPath<String>) -> Response {
+    match asset(&path) {
+        Some((content_type, body)) => {
+            ([(header::CONTENT_TYPE, content_type)], body).into_response()
+        }
+        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
+    }
+}
+
+// ---- live metrics ----
+
+async fn get_metrics(State(state): State<AppState>) -> impl IntoResponse {
+    let mut monitor = state.inner.monitor.lock().await;
+    Json(monitor.sample())
+}
+
+async fn get_system(State(state): State<AppState>) -> impl IntoResponse {
+    let mut monitor = state.inner.monitor.lock().await;
+    Json(monitor.system_info())
 }
 
 // ---- config ----

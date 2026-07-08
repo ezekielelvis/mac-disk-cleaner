@@ -1,219 +1,166 @@
 # Disk Cleaner 🧹
 
-A powerful, smart CLI disk space analyzer and cleaner built with Rust and Ratatui. This tool helps you identify and remove unwanted files intelligently, freeing up disk space on your system.
+A cross-platform disk-space analyzer, system monitor, and cleaner. A single Rust
+binary runs the **backend service** and serves a clean, minimalist **web UI** —
+so one command starts everything.
 
-## Features ✨
+The interface has three pages behind a sidebar:
 
-### New Redesigned UI 🎨
+- **📊 Dashboard** — four live charts reading straight from your system (CPU,
+  memory, disk usage, and network I/O), updating every second.
+- **🖥️ System** — operating system, CPU, memory, storage devices, load, and a
+  health summary (with temperatures where available).
+- **🧹 Cleaner** — scan any path, get a categorized breakdown, and safely reclaim
+  space.
 
-- **Home Screen**: Beautiful animated home screen with multiple scan options
-  - Full Disk Scan - Comprehensive system-wide analysis
-  - Home Directory - Scan personal files only  
-  - Custom Path - Choose specific directories
-  - Quick Scan - Fast scan of common junk locations
-  - Large Files Only - Find files >100MB
-  - Old & Unused Files - Files not accessed in 6+ months
+Everything is read live via [`sysinfo`](https://crates.io/crates/sysinfo), which
+works on **macOS, Linux, and Windows**.
 
-- **Enhanced Scanning View**:
-  - Real-time animated progress indicators
-  - Live statistics panel showing files, directories, and size
-  - Scrollable file discovery list
-  - Storage usage visualization
-  - Current path being scanned with animation
+## Quick start ▶️
 
-- **Improved Results Navigation**:
-  - Tab-based view switching (Files / Categories)
-  - Enhanced file tree with safety indicators
-  - Visual category breakdown with percentage bars
-  - Detailed file information panel
-  - Smart recommendations sidebar
+One command builds and runs the whole thing (backend **and** frontend), then
+opens your browser:
 
-### Core Features
+```bash
+./run.sh
+```
 
-- **Full Disk Scan**: Scans the entire disk from root `/` by default with parallel workers
-- **Fast Parallel Scanning**: Uses 4 worker threads for significantly faster scans
-- **Smart Virtual FS Handling**: Automatically skips virtual filesystems (/dev, /proc, etc.)
-- **Accurate Disk Usage**: Uses block-level allocation for true disk space calculation
-- **Smart Categorization**: Automatically categorizes files into:
-  - Cache files
-  - Temporary files
-  - Large files (>100MB)
-  - Old files (>1 year)
-  - Log files
-  - Build artifacts (target/, build/, dist/, .next/)
-  - node_modules directories
-  - Package caches (.cargo, .npm, .yarn, pip)
+That's it. The app is now at `http://127.0.0.1:8080`.
 
-- **Interactive TUI**: Beautiful terminal user interface built with Ratatui
-- **Color-coded Display**: Different colors for different file categories
-- **System File Protection**: System files marked with ⚙️ and warnings before deletion
-- **Hidden File Detection**: Hidden files marked with ◌ indicator
-- **Smart Recommendations**: AI-powered suggestions on what to clean
-- **Batch Operations**: Mark multiple files/directories for deletion
-- **Safe Deletion**: Confirmation prompts before deletion
-- **Detailed Information**: View file sizes, modification dates, and paths
+Prefer to use Cargo directly? These are equivalent:
 
-## Installation 🚀
+```bash
+cargo run --release            # build + run everything
+cargo run --release -- --port 9000 --home
+```
+
+> The frontend is embedded in and served by the same process — there is no
+> separate frontend server to start, no `npm install`, and no build step for the
+> UI.
 
 ### Prerequisites
 
-- Rust 1.70 or higher
-- Cargo
+- Rust 1.85+ / Cargo (edition 2024)
 
-### Build from Source
-
-```bash
-# Clone the repository
-cd disk-cleaner2
-
-# Build the project
-cargo build --release
-
-# Run the binary
-./target/release/disk-cleaner
-```
-
-### Install
+### Install as a command
 
 ```bash
 cargo install --path .
+disk-cleaner            # run from anywhere
 ```
 
-## Usage 📖
+## Command-line options ⚙️
 
-### Basic Usage
+All flags are passed through by `./run.sh` as well.
+
+| Flag                | Description                                        | Default            |
+| ------------------- | -------------------------------------------------- | ------------------ |
+| `--port <PORT>`     | Port for the web UI                                | `8080`             |
+| `--path <PATH>`     | Default path pre-filled in the Cleaner             | `/` (full disk)    |
+| `--home`            | Default the Cleaner scan to your home directory    | off                |
+| `--min-size <MB>`   | Minimum file size to display                       | `1`                |
+| `--depth <N>`       | Scan depth limit (`0` = unlimited)                 | `0`                |
+| `--no-open`         | Don't open the browser automatically               | off                |
+
+Examples:
 
 ```bash
-# Launch with interactive home screen
-disk-cleaner
-
-# Scan only home directory (skip home screen)
-disk-cleaner --home
-
-# Scan a specific directory
-disk-cleaner --path /path/to/directory
-
-# Set minimum file size (in MB)
-disk-cleaner --min-size 10
-
-# Unlimited depth (default is 0 = unlimited)
-disk-cleaner --depth 0
+./run.sh --port 9000            # run on a different port
+./run.sh --home                 # cleaner defaults to ~/
+./run.sh --no-open              # headless / remote use
 ```
 
-### Home Screen Controls
+## The pages 🧭
 
-- `↑`/`↓` or `j`/`k` - Navigate scan options
-- `Enter` - Start selected scan
-- `p` - Set custom path
-- `+`/`-` - Adjust minimum file size
-- `d` - Toggle max depth
-- `.` - Toggle hidden files
-- `q` - Quit
+### 📊 Dashboard — live metrics
 
-### Scanning View Controls
+Four time-series charts polling the backend once per second:
 
-- `↑`/`↓` - Scroll file list
-- `q` - Cancel scan
+1. **CPU Usage** — total load across all cores (%)
+2. **Memory Usage** — RAM in use (%) with absolute figures
+3. **Disk Usage** — used space on the primary volume (%)
+4. **Network I/O** — download/upload throughput
 
-### Results View Keyboard Shortcuts
+### 🖥️ System — information & health
 
-**Navigation:**
-- `↑`/`k` - Move up
-- `↓`/`j` - Move down
-- `Enter`/`→`/`l` - Enter folder / View category
-- `Backspace`/`←` - Go back
-- `h` - Return to home screen
+A refreshed-every-few-seconds snapshot of:
 
-**Actions:**
-- `Space` - Mark/unmark item for deletion
-- `d` - Delete marked items
-- `s` - Mark all safe items
-- `a` - Mark all items (except system)
-- `c` - Clear all marks
-- `v` - Switch between file list and category view
-- `.` - Toggle hidden files
+- **OS**: name, version, kernel, architecture, hostname, uptime, boot time
+- **Processor**: model, physical/logical cores, frequency, per-core load, load average
+- **Memory**: RAM and swap usage
+- **Storage devices**: every mounted disk with filesystem, type, and usage
+- **Health**: a coarse status (healthy / needs attention / critical) derived from
+  memory pressure, swap usage, and temperature, plus per-sensor readings
 
-**Other:**
-- `?` - Toggle help screen
-- `q` - Quit application
+### 🧹 Cleaner — scan & reclaim
 
-## Features in Detail 🔍
+1. Pick a scan: **Full Disk**, **Home Directory**, or a **Custom Path**.
+2. Review the results: category breakdown, largest directories, largest files,
+   and smart recommendations.
+3. Select files (or "Select safe") and delete them. Deletion is guarded so it can
+   only remove paths inside the scanned root, and always asks for confirmation.
 
-### Smart Analysis
-
-The tool automatically identifies:
-- **node_modules**: JavaScript/TypeScript dependencies that can be reinstalled
-- **Build Artifacts**: Compiled code (target/, build/, dist/) that can be regenerated
-- **Cache Directories**: Various caches that can be safely cleared
-- **Log Files**: Old log files taking up space
-- **Large Files**: Files over 100MB that might need attention
-- **Old Files**: Files not modified in over a year
-
-### Category View
-
-Switch to category view (press `v`) to see files grouped by type:
-- Quick overview of space used by each category
-- Color-coded for easy identification
-- Shows count and total size per category
-
-### Safety Features
-
-- Confirmation required before deletion
-- Shows estimated space to be freed
-- Reports success/failure for each deletion
-- Non-destructive marking system
+Smart categorization covers caches, temp files, logs, build artifacts,
+`node_modules`, package caches, large/old files, media, archives, and more.
+Safety indicators mark system (⚙️) and hidden (◌) files.
 
 ## Architecture 🏗️
 
-The project is organized into modules:
+```text
+src/
+├── main.rs              # CLI args, launches the server, opens the browser
+├── scanner/             # parallel filesystem traversal + progress
+├── analyzer/            # categorization + recommendations
+├── cleaner/             # safe deletion
+├── models/              # shared data types (FileEntry, StorageInfo, …)
+└── web/
+    ├── server.rs        # axum routes: assets, config, metrics, scan, delete
+    ├── sysmon.rs        # cross-platform system monitor (CPU/mem/disk/net/health)
+    ├── dto.rs           # JSON payloads for the cleaner
+    └── assets/          # the frontend, embedded at compile time
+        ├── index.html
+        ├── css/         # base.css + one stylesheet per page (plain, non-modular)
+        └── js/
+            ├── app.js           # hash router + page swapping
+            ├── lib/             # api.js, format.js, charts.js (canvas charts)
+            ├── components/      # sidebar.js
+            └── pages/           # dashboard.js, system.js, cleaner.js
+```
 
-- **scanner**: File system traversal and size calculation
-- **analyzer**: Smart categorization and recommendation engine
-- **cleaner**: Safe file deletion operations
-- **ui**: Ratatui-based terminal user interface
+**Frontend layout:** the UI is broken into components and pages with a sidebar
+router. Styling is deliberately **separated, not modular** — plain global
+stylesheets, one per page, on a white background with a clean type scale. No
+build tooling: ES modules and CSS are served directly by the Rust backend.
+
+### HTTP API
+
+| Method | Route                | Purpose                                  |
+| ------ | -------------------- | ---------------------------------------- |
+| GET    | `/`                  | The web UI                               |
+| GET    | `/assets/*`          | Embedded CSS/JS assets                    |
+| GET    | `/api/config`        | Defaults + current storage               |
+| GET    | `/api/metrics`       | Live CPU/mem/disk/network sample         |
+| GET    | `/api/system`        | Full system info + health                |
+| POST   | `/api/scan`          | Start a scan                             |
+| GET    | `/api/scan/stream`   | Server-Sent Events scan progress         |
+| GET    | `/api/results`       | Categorized scan results                 |
+| POST   | `/api/delete`        | Delete selected paths (root-guarded)     |
 
 ## Dependencies 📦
 
-- `ratatui` - Terminal UI framework
-- `crossterm` - Cross-platform terminal manipulation
-- `clap` - Command-line argument parsing
-- `tokio` - Async runtime
-- `walkdir` - Directory traversal
-- `humansize` - Human-readable file sizes
-- `chrono` - Date and time handling
+- `axum` + `tokio` — web server and async runtime
+- `sysinfo` — cross-platform system metrics
+- `walkdir` — directory traversal
+- `clap` — command-line arguments
+- `serde` / `serde_json` — serialization
+- `chrono`, `humansize`, `dirs`, `libc` — dates, sizes, paths, storage stats
 
-## Examples 💡
+## Safety warning ⚠️
 
-### Find and clean node_modules
-
-1. Run: `disk-cleaner --path ~/projects`
-2. Press `v` to switch to category view
-3. Navigate to "node_modules" category
-4. Review the space usage
-5. Press `a` to mark all, then `d` to delete
-
-### Clean old build artifacts
-
-1. Run the cleaner on your projects directory
-2. Look for "Build Artifacts" in the recommendations
-3. Mark individual directories or use category view
-4. Confirm deletion to free up space
-
-### Find large files
-
-1. Run with: `disk-cleaner --min-size 100`
-2. All files >100MB will be shown at the top
-3. Review and mark unwanted large files
-4. Delete to reclaim space
-
-## Contributing 🤝
-
-Contributions are welcome! Please feel free to submit a Pull Request.
+The Cleaner permanently deletes files. Always review selected items before
+confirming. Deletion is restricted to paths inside the scanned root, but you are
+responsible for what you remove — the authors are not liable for data loss.
 
 ## License 📄
 
-This project is licensed under the MIT License.
-
-## Safety Warning ⚠️
-
-This tool permanently deletes files. Always review marked items carefully before confirming deletion. The authors are not responsible for data loss.
+MIT.

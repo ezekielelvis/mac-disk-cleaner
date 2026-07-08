@@ -3,37 +3,34 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Disk Cleaner 🧹</title>
-  <link rel="stylesheet" href="/style.css" />
+  <title>Disk Cleaner</title>
+  <link rel="stylesheet" href="/assets/css/base.css" />
+  <link rel="stylesheet" href="/assets/css/dashboard.css" />
+  <link rel="stylesheet" href="/assets/css/system.css" />
+  <link rel="stylesheet" href="/assets/css/cleaner.css" />
 </head>
 <body>
-  <header class="topbar">
-    <div class="brand">
-      <span class="logo">🧹</span>
-      <div>
-        <div class="brand-title">DISK CLEANER</div>
-        <div class="brand-sub">Smart Disk Space Analyzer</div>
-      </div>
-    </div>
-    <div id="topbar-stats" class="topbar-stats"></div>
-  </header>
+  <div class="layout">
+    <aside id="sidebar" class="sidebar"></aside>
+    <main id="view" class="view"></main>
+  </div>
 
-  <main id="app"></main>
-
-  <!-- Confirmation modal -->
+  <!-- Confirmation modal (used by the cleaner page) -->
   <div id="modal" class="modal hidden">
     <div class="modal-card">
       <h2 id="modal-title">Confirm deletion</h2>
       <p id="modal-body"></p>
       <div class="modal-actions">
-        <button id="modal-cancel" class="btn btn-ghost">Cancel</button>
-        <button id="modal-confirm" class="btn btn-danger">Delete</button>
+        <button type="button" id="modal-cancel" class="btn btn-ghost">Cancel</button>
+        <button type="button" id="modal-confirm" class="btn btn-danger">Delete</button>
       </div>
     </div>
   </div>
 
   <div id="toast" class="toast hidden"></div>
 
-  <script src="/app.js"></script>
+  <!-- Chart.js (vendored, UMD) exposes a global `Chart` before the app boots. -->
+  <script src="/assets/js/vendor/chart.umd.js"></script>
+  <script type="module" src="/assets/js/app.js"></script>
 </body>
 </html>

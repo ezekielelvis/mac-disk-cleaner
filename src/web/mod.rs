@@ -2,5 +2,6 @@
 // and exposes the scanner/analyzer/cleaner over a small JSON + SSE API.
 mod dto;
 mod server;
+mod sysmon;
 
 pub use server::run_server;

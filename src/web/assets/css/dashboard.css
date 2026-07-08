@@ -1,0 +1,66 @@
+/* dashboard.css — four live-metric cards in an evenly-spaced 2x2 grid. */
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  grid-auto-rows: 1fr;
+  gap: 20px;
+}
+@media (max-width: 720px) {
+  .metric-grid { grid-template-columns: 1fr; }
+}
+
+/* Flat tile: hairline border, no fill, no radius. Every card the same height
+   so the four live metrics stay perfectly consistent. */
+.metric-card {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--border);
+  border-radius: 0;
+  padding: 20px 22px;
+  min-height: 220px;
+}
+
+.metric-top {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+}
+.metric-top h3 {
+  margin: 0;
+  font-size: 10.5px; font-weight: 600; color: var(--text-faint);
+  letter-spacing: 0.1em; text-transform: uppercase;
+}
+
+.metric-value {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-sub {
+  font-size: 11.5px;
+  color: var(--text-dim);
+  margin-top: 4px;
+  min-height: 17px;
+  font-variant-numeric: tabular-nums;
+}
+
+.metric-legend { display: flex; gap: 18px; }
+.metric-legend b { color: var(--text); font-variant-numeric: tabular-nums; }
+.metric-legend .dot {
+  display: inline-block; width: 8px; height: 2px;
+  margin-right: 6px; vertical-align: middle;
+}
+
+/* Chart.js sizes its canvas to this box (maintainAspectRatio: false). */
+.chart-wrap {
+  position: relative;
+  margin-top: auto;
+  height: 110px;
+  width: 100%;
+}
+.chart-wrap canvas { display: block; }
