@@ -1,149 +1,42 @@
-use super::dto::*;
-use super::sysmon::SysMonitor;
+//! The JSON + SSE request handlers backing the web API.
+
+use super::state::{AppState, ResultsState};
 use crate::analyzer::{Analyzer, FileCategory};
 use crate::cleaner::Cleaner;
 use crate::models::{FileEntry, ScanProgress, StorageInfo};
 use crate::scanner::Scanner;
-use anyhow::Result;
+use crate::web::dto::*;
 use axum::{
-    extract::{Path as AxumPath, State},
-    http::{header, StatusCode},
+    extract::State,
+    http::StatusCode,
     response::{
         sse::{Event, KeepAlive, Sse},
-        Html, IntoResponse, Response,
+        IntoResponse, Response,
     },
-    routing::{get, post},
-    Json, Router,
+    Json,
 };
 use futures::stream::Stream;
 use serde_json::json;
 use std::convert::Infallible;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::atomic::Ordering;
 use std::time::Duration;
-use tokio::sync::Mutex;
-
-/// Categorized scan output kept in memory after a scan completes.
-struct ResultsState {
-    scan_path: PathBuf,
-    entries: Vec<(FileEntry, FileCategory)>,
-}
-
-struct Inner {
-    progress: Arc<Mutex<ScanProgress>>,
-    results: Mutex<Option<ResultsState>>,
-    scanning: AtomicBool,
-    monitor: Mutex<SysMonitor>,
-    default_path: PathBuf,
-    default_min_size: u64,
-    default_depth: usize,
-}
-
-#[derive(Clone)]
-pub struct AppState {
-    inner: Arc<Inner>,
-}
-
-pub async fn run_server(
-    default_path: PathBuf,
-    min_size: u64,
-    depth: usize,
-    port: u16,
-) -> Result<()> {
-    let state = AppState {
-        inner: Arc::new(Inner {
-            progress: Arc::new(Mutex::new(ScanProgress::default())),
-            results: Mutex::new(None),
-            scanning: AtomicBool::new(false),
-            monitor: Mutex::new(SysMonitor::new()),
-            default_path,
-            default_min_size: min_size,
-            default_depth: depth,
-        }),
-    };
-
-    let app = Router::new()
-        .route("/", get(index))
-        .route("/assets/*path", get(serve_asset))
-        .route("/api/config", get(get_config))
-        .route("/api/metrics", get(get_metrics))
-        .route("/api/system", get(get_system))
-        .route("/api/scan", post(post_scan))
-        .route("/api/scan/stream", get(scan_stream))
-        .route("/api/results", get(get_results))
-        .route("/api/delete", post(post_delete))
-        .with_state(state);
-
-    let addr = std::net::SocketAddr::from(([127, 0, 0, 1], port));
-    let listener = tokio::net::TcpListener::bind(addr).await?;
-    println!("\n  Disk Cleaner is running at http://{addr}\n");
-    axum::serve(listener, app).await?;
-    Ok(())
-}
-
-// ---- static assets ----
-//
-// The frontend is split into per-page CSS and ES-module JS files. They are
-// embedded at compile time and served through one handler keyed by path, so
-// adding a component/page only means adding a line to `asset()`.
-
-async fn index() -> Html<&'static str> {
-    Html(include_str!("assets/index.html"))
-}
-
-const CSS: &str = "text/css; charset=utf-8";
-const JS: &str = "application/javascript; charset=utf-8";
-
-/// Map an `/assets/<path>` request to its embedded (content-type, body).
-fn asset(path: &str) -> Option<(&'static str, &'static str)> {
-    Some(match path {
-        // stylesheets — one global base plus one file per page (non-modular)
-        "css/base.css" => (CSS, include_str!("assets/css/base.css")),
-        "css/dashboard.css" => (CSS, include_str!("assets/css/dashboard.css")),
-        "css/system.css" => (CSS, include_str!("assets/css/system.css")),
-        "css/cleaner.css" => (CSS, include_str!("assets/css/cleaner.css")),
-        // third-party (vendored so the app stays self-contained offline)
-        "js/vendor/chart.umd.js" => (JS, include_str!("assets/js/vendor/chart.umd.js")),
-        // app shell + shared libs
-        "js/app.js" => (JS, include_str!("assets/js/app.js")),
-        "js/lib/api.js" => (JS, include_str!("assets/js/lib/api.js")),
-        "js/lib/format.js" => (JS, include_str!("assets/js/lib/format.js")),
-        "js/lib/metrics.js" => (JS, include_str!("assets/js/lib/metrics.js")),
-        // components
-        "js/components/sidebar.js" => (JS, include_str!("assets/js/components/sidebar.js")),
-        // pages
-        "js/pages/dashboard.js" => (JS, include_str!("assets/js/pages/dashboard.js")),
-        "js/pages/system.js" => (JS, include_str!("assets/js/pages/system.js")),
-        "js/pages/cleaner.js" => (JS, include_str!("assets/js/pages/cleaner.js")),
-        _ => return None,
-    })
-}
-
-async fn serve_asset(AxumPath(path): AxumPath<String>) -> Response {
-    match asset(&path) {
-        Some((content_type, body)) => {
-            ([(header::CONTENT_TYPE, content_type)], body).into_response()
-        }
-        None => (StatusCode::NOT_FOUND, "Not found").into_response(),
-    }
-}
 
 // ---- live metrics ----
 
-async fn get_metrics(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn get_metrics(State(state): State<AppState>) -> impl IntoResponse {
     let mut monitor = state.inner.monitor.lock().await;
     Json(monitor.sample())
 }
 
-async fn get_system(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn get_system(State(state): State<AppState>) -> impl IntoResponse {
     let mut monitor = state.inner.monitor.lock().await;
     Json(monitor.system_info())
 }
 
 // ---- config ----
 
-async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
+pub(super) async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
     let inner = &state.inner;
     let home = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/"));
     let storage = StorageInfo::from_path(&inner.default_path);
@@ -159,7 +52,7 @@ async fn get_config(State(state): State<AppState>) -> impl IntoResponse {
 
 // ---- scan ----
 
-async fn post_scan(
+pub(super) async fn post_scan(
     State(state): State<AppState>,
     Json(req): Json<ScanRequest>,
 ) -> Response {
@@ -202,7 +95,10 @@ async fn post_scan(
         if let Ok(result) = scan_result {
             // Categorize the whole batch in O(n) (duplicate-name detection
             // included) rather than O(n^2) per-entry context scans.
-            let categorized = Analyzer::categorize_all(result.entries);
+            let mut categorized = Analyzer::categorize_all(result.entries);
+            // Hide system files: they are never shown to the user and never
+            // offered for deletion, so drop them before storing results.
+            categorized.retain(|(e, _)| !e.is_system);
             let mut results = inner.results.lock().await;
             *results = Some(ResultsState {
                 scan_path: scan_path.clone(),
@@ -218,7 +114,7 @@ async fn post_scan(
     (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
 
-async fn scan_stream(
+pub(super) async fn scan_stream(
     State(state): State<AppState>,
 ) -> Sse<impl Stream<Item = Result<Event, Infallible>>> {
     let inner = state.inner.clone();
@@ -253,7 +149,7 @@ async fn scan_stream(
 
 // ---- results ----
 
-async fn get_results(State(state): State<AppState>) -> Response {
+pub(super) async fn get_results(State(state): State<AppState>) -> Response {
     let results = state.inner.results.lock().await;
     match results.as_ref() {
         Some(rs) => Json(build_results(&rs.scan_path, &rs.entries)).into_response(),
@@ -267,7 +163,7 @@ async fn get_results(State(state): State<AppState>) -> Response {
 
 // ---- delete ----
 
-async fn post_delete(
+pub(super) async fn post_delete(
     State(state): State<AppState>,
     Json(req): Json<DeleteRequest>,
 ) -> Response {

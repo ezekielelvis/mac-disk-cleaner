@@ -1,11 +1,17 @@
+//! Turns categorized scan entries into the results payload sent to the browser.
+//!
+//! Everything here runs in O(n) over the scanned entries: the category
+//! breakdown, top-level directory rollup and largest-files list are each a
+//! single pass, and duplicate-name detection was already resolved upstream.
+
+use super::types::*;
 use crate::analyzer::FileCategory;
 use crate::models::{FileEntry, StorageInfo};
-use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::Path;
 
 /// Every category variant, used to build the breakdown and resolve colors.
-pub const ALL_CATEGORIES: [FileCategory; 17] = [
+const ALL_CATEGORIES: [FileCategory; 17] = [
     FileCategory::Cache,
     FileCategory::TempFiles,
     FileCategory::LargeFiles,
@@ -27,110 +33,6 @@ pub const ALL_CATEGORIES: [FileCategory; 17] = [
 
 /// Maximum number of individual files returned to the browser.
 const MAX_FILES: usize = 500;
-
-#[derive(Serialize)]
-pub struct StorageDto {
-    pub total: u64,
-    pub used: u64,
-    pub available: u64,
-    pub percent: f64,
-}
-
-impl From<&StorageInfo> for StorageDto {
-    fn from(s: &StorageInfo) -> Self {
-        Self {
-            total: s.total_space,
-            used: s.used_space,
-            available: s.available_space,
-            percent: s.usage_percent() * 100.0,
-        }
-    }
-}
-
-#[derive(Serialize)]
-pub struct ProgressDto {
-    pub files: usize,
-    pub dirs: usize,
-    pub size: u64,
-    pub current_path: String,
-    pub complete: bool,
-}
-
-#[derive(Serialize)]
-pub struct CategoryDto {
-    pub name: String,
-    pub color: String,
-    pub description: String,
-    pub size: u64,
-    pub count: usize,
-    pub safe: bool,
-}
-
-#[derive(Serialize)]
-pub struct DirDto {
-    pub name: String,
-    pub path: String,
-    pub size: u64,
-}
-
-#[derive(Serialize)]
-pub struct FileDto {
-    pub path: String,
-    pub name: String,
-    pub size: u64,
-    pub category: String,
-    pub color: String,
-    pub safe: bool,
-    pub is_dir: bool,
-    pub is_hidden: bool,
-    pub is_system: bool,
-    pub modified: String,
-}
-
-#[derive(Serialize)]
-pub struct ResultsDto {
-    pub scan_path: String,
-    pub total_size: u64,
-    pub total_files: usize,
-    pub total_dirs: usize,
-    pub safe_savings: u64,
-    pub storage: StorageDto,
-    pub categories: Vec<CategoryDto>,
-    pub directories: Vec<DirDto>,
-    pub files: Vec<FileDto>,
-    pub recommendations: Vec<String>,
-}
-
-#[derive(Deserialize)]
-pub struct ScanRequest {
-    pub path: String,
-    #[serde(default = "default_min_size")]
-    pub min_size_mb: u64,
-    #[serde(default)]
-    pub max_depth: usize,
-}
-
-fn default_min_size() -> u64 {
-    1
-}
-
-#[derive(Deserialize)]
-pub struct DeleteRequest {
-    pub paths: Vec<String>,
-}
-
-#[derive(Serialize)]
-pub struct DeleteResult {
-    pub path: String,
-    pub success: bool,
-}
-
-#[derive(Serialize)]
-pub struct DeleteResponse {
-    pub results: Vec<DeleteResult>,
-    pub freed: u64,
-    pub deleted: usize,
-}
 
 fn human(bytes: u64) -> String {
     humansize::format_size(bytes, humansize::DECIMAL)
