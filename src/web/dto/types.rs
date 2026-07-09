@@ -29,6 +29,16 @@ pub struct ProgressDto {
     pub size: u64,
     pub current_path: String,
     pub complete: bool,
+    /// Live size-by-group breakdown of what has been discovered so far,
+    /// sorted largest first. Drives the scanning chart.
+    pub categories: Vec<ProgressCategoryDto>,
+}
+
+/// One group in the live scan breakdown (e.g. "Cache", "Media", "node_modules").
+#[derive(Serialize)]
+pub struct ProgressCategoryDto {
+    pub name: String,
+    pub size: u64,
 }
 
 #[derive(Serialize)]

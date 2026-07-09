@@ -127,12 +127,20 @@ pub(super) async fn scan_stream(
             let done = !inner.scanning.load(Ordering::SeqCst);
             let dto = {
                 let prog = inner.progress.lock().await;
+                // Real, grouped sizes discovered so far, largest first.
+                let mut categories: Vec<ProgressCategoryDto> = prog
+                    .category_sizes
+                    .iter()
+                    .map(|(name, &size)| ProgressCategoryDto { name: name.clone(), size })
+                    .collect();
+                categories.sort_by(|a, b| b.size.cmp(&a.size));
                 ProgressDto {
                     files: prog.files_scanned,
                     dirs: prog.dirs_scanned,
                     size: prog.total_size_scanned,
                     current_path: prog.current_path.clone(),
                     complete: done,
+                    categories,
                 }
             };
             let data = serde_json::to_string(&dto).unwrap_or_else(|_| "{}".to_string());

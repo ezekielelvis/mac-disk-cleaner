@@ -19,6 +19,42 @@ const PALETTE = [
 ];
 const GRID = "#eeeeee";
 
+// Distinct, stable color per scan group. Keyed by name so a group keeps its
+// color as its size changes rank during the live scan. "Other" is neutral gray.
+const CATEGORY_COLORS = {
+  "Cache": "#f59e0b",
+  "Temp Files": "#f97316",
+  "Large Files": "#a855f7",
+  "Old Files": "#06b6d4",
+  "Duplicate Names": "#3b82f6",
+  "Log Files": "#b45309",
+  "Build Artifacts": "#ef4444",
+  "node_modules": "#ec4899",
+  "Package Cache": "#14b8a6",
+  "Hidden Files": "#64748b",
+  "System Files": "#991b1b",
+  "Library Files": "#6366f1",
+  "Downloads": "#22c55e",
+  "Documents": "#0ea5e9",
+  "Media": "#84cc16",
+  "Archives": "#d946ef",
+  "Regular": "#9ca3af",
+  "Other": "#9ca3af",
+};
+function categoryColor(name) {
+  return CATEGORY_COLORS[name] || PALETTE[Math.abs(hashStr(name)) % PALETTE.length];
+}
+// Collapse the live category map into the biggest groups (+ a single "Other")
+// so the chart stays readable while still reflecting true sizes.
+function groupCategories(categories, max = 9) {
+  const sorted = (categories || []).filter((c) => c.size > 0).sort((a, b) => b.size - a.size);
+  if (sorted.length <= max + 1) return sorted;
+  const top = sorted.slice(0, max);
+  const other = sorted.slice(max).reduce((s, c) => s + c.size, 0);
+  top.push({ name: "Other", size: other });
+  return top;
+}
+
 export async function mount(view) {
   const state = {
     config: null,
@@ -31,6 +67,8 @@ export async function mount(view) {
     selected: new Set(),
     es: null,          // active EventSource during a scan
     charts: [],        // live Chart.js instances to tear down
+    scanChart: null,   // the live scanning polar, updated from progress
+    scanGroups: [],    // real (name,size) groups behind the scanning polar slices
     scanTimer: null,   // animation interval for the scanning polar
     detailCategory: null, // category name currently drilled into
     folderFilter: null,   // directory path narrowing the detail file list
@@ -156,6 +194,7 @@ export async function mount(view) {
     view.innerHTML = `
       <div class="scanning">
         <div class="scan-chart"><canvas id="scan-polar"></canvas></div>
+        <div class="scan-legend" id="scan-legend"></div>
         <h2>Scanning…</h2>
         <div class="scan-stats">
           <div class="scan-stat"><div class="num" id="s-files">0</div><div class="lbl">files</div></div>
@@ -165,36 +204,58 @@ export async function mount(view) {
         <div class="scan-path" id="s-path">${esc(path)}</div>
       </div>`;
 
-    // Animated polar loader: segments pulse while the scan runs. Replaced by the
-    // real, interactive category polar once results are in.
-    const n = 7;
-    const chart = track(new Chart(view.querySelector("#scan-polar"), {
+    // Live polar of real, grouped sizes. Each slice's radius grows with the
+    // bytes discovered in that group, updating as progress streams in. It is
+    // replaced by the interactive category polar once the scan completes.
+    state.scanChart = track(new Chart(view.querySelector("#scan-polar"), {
       type: "polarArea",
-      data: {
-        labels: Array.from({ length: n }, () => ""),
-        datasets: [{
-          data: randData(n),
-          backgroundColor: PALETTE.slice(0, n).map((c) => hexToRgba(c, 0.55)),
-          borderColor: PALETTE.slice(0, n),
-          borderWidth: 1,
-        }],
-      },
+      data: { labels: [], datasets: [{ data: [], backgroundColor: [], borderColor: [], borderWidth: 1.5 }] },
       options: {
         responsive: true,
         maintainAspectRatio: false,
-        animation: { duration: 650 },
-        plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        animation: { duration: 450 },
+        plugins: {
+          legend: { display: false },
+          tooltip: {
+            callbacks: {
+              label: (ctx) => {
+                const g = state.scanGroups[ctx.dataIndex];
+                return g ? `${g.name}: ${fmtBytes(g.size)}` : "";
+              },
+            },
+          },
+        },
         scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID } } },
       },
     }));
-    state.scanTimer = setInterval(() => {
-      chart.data.datasets[0].data = randData(n);
-      chart.update();
-    }, 700);
+  }
+
+  // Push the latest live breakdown into the scanning chart + legend.
+  function updateScanChart(categories) {
+    const chart = state.scanChart;
+    if (!chart) return;
+    const groups = groupCategories(categories);
+    state.scanGroups = groups;
+    const colors = groups.map((g) => categoryColor(g.name));
+    chart.data.labels = groups.map((g) => g.name);
+    chart.data.datasets[0].data = polarRadii(groups.map((g) => g.size));
+    chart.data.datasets[0].backgroundColor = colors.map((c) => hexToRgba(c, 0.62));
+    chart.data.datasets[0].borderColor = colors;
+    chart.update();
+
+    const legend = view.querySelector("#scan-legend");
+    if (legend) {
+      legend.innerHTML = groups
+        .map(
+          (g) => `<span class="lg-item"><span class="lg-dot" style="background:${categoryColor(g.name)}"></span>${esc(g.name)}<b>${fmtBytes(g.size)}</b></span>`
+        )
+        .join("");
+    }
   }
 
   function stopScanAnim() {
     if (state.scanTimer) { clearInterval(state.scanTimer); state.scanTimer = null; }
+    state.scanChart = null;
   }
 
   function streamProgress() {
@@ -210,6 +271,7 @@ export async function mount(view) {
         view.querySelector("#s-size").textContent = fmtBytes(p.size);
         if (p.current_path) view.querySelector("#s-path").textContent = p.current_path;
       }
+      updateScanChart(p.categories);
       if (p.complete) { es.close(); state.es = null; stopScanAnim(); loadResults(); }
     };
     es.onerror = () => { es.close(); state.es = null; stopScanAnim(); loadResults(); };
@@ -262,7 +324,7 @@ export async function mount(view) {
       data: {
         labels: cats.map((c) => c.name),
         datasets: [{
-          data: cats.map((c) => c.size),
+          data: polarRadii(cats.map((c) => c.size)),
           backgroundColor: cats.map((c) => hexToRgba(c.color, 0.6)),
           borderColor: cats.map((c) => c.color),
           borderWidth: 1,
@@ -273,7 +335,7 @@ export async function mount(view) {
         maintainAspectRatio: false,
         plugins: {
           legend: { position: "right", labels: { boxWidth: 12, font: { size: 11 } } },
-          tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${fmtBytes(ctx.raw)}` } },
+          tooltip: { callbacks: { label: (ctx) => `${cats[ctx.dataIndex].name}: ${fmtBytes(cats[ctx.dataIndex].size)}` } },
         },
         scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID } } },
         onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
@@ -378,7 +440,7 @@ export async function mount(view) {
         data: {
           labels: folders.map((d) => d.name),
           datasets: [{
-            data: folders.map((d) => d.size),
+            data: polarRadii(folders.map((d) => d.size)),
             backgroundColor: folders.map((d, i) => hexToRgba(colorFor(d.dir, i), state.folderFilter === d.dir ? 0.9 : 0.55)),
             borderColor: folders.map((d, i) => colorFor(d.dir, i)),
             borderWidth: folders.map((d) => (state.folderFilter === d.dir ? 2 : 1)),
@@ -389,7 +451,7 @@ export async function mount(view) {
           maintainAspectRatio: false,
           plugins: {
             legend: { position: "right", labels: { boxWidth: 12, font: { size: 11 } } },
-            tooltip: { callbacks: { label: (ctx) => `${ctx.label}: ${fmtBytes(ctx.raw)}` } },
+            tooltip: { callbacks: { label: (ctx) => `${folders[ctx.dataIndex].name}: ${fmtBytes(folders[ctx.dataIndex].size)}` } },
           },
           scales: { r: { ticks: { display: false }, grid: { color: GRID }, angleLines: { color: GRID } } },
           onHover: (evt, els) => { evt.native.target.style.cursor = els.length ? "pointer" : "default"; },
@@ -524,8 +586,25 @@ function truncate(s, n) {
 function colorFor(_dir, i) {
   return PALETTE[i % PALETTE.length];
 }
-function randData(n) {
-  return Array.from({ length: n }, () => 4 + Math.random() * 10);
+// Stable small hash for deriving a fallback color from an unknown group name.
+function hashStr(s) {
+  let h = 0;
+  for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) | 0;
+  return h;
+}
+
+// Map true byte sizes to polar-area radii for display. Two things happen here:
+//   1. sqrt scaling — so a slice's *area* (not its radius) tracks the true size,
+//      the honest way to compare magnitudes and far kinder to small groups than
+//      Chart.js's default linear-radius scaling.
+//   2. a minimum-radius floor — so every non-zero group is always visible, even
+//      one that is thousands of times smaller than the largest.
+// The real sizes are still used for tooltips and the legend; only the drawn
+// radius is transformed.
+function polarRadii(sizes, minFrac = 0.16) {
+  const max = Math.max(1, ...sizes);
+  const rootMax = Math.sqrt(max);
+  return sizes.map((v) => (v <= 0 ? 0 : (minFrac + (1 - minFrac) * (Math.sqrt(v) / rootMax)) * max));
 }
 function hexToRgba(hex, a) {
   const s = hex.replace("#", "");

@@ -45,11 +45,26 @@
 .field input.path-input { min-width: 340px; font-family: var(--mono); }
 
 /* scanning */
-.scanning { text-align: center; padding: 48px 0; }
+.scanning { text-align: center; padding: 40px 0; }
 .scan-chart {
   position: relative;
-  width: 220px; height: 220px;
-  margin: 0 auto 26px;
+  width: min(440px, 80vw); height: min(440px, 80vw);
+  margin: 0 auto 20px;
+}
+.scan-legend {
+  display: flex; flex-wrap: wrap; justify-content: center;
+  gap: 8px 18px; max-width: 660px; margin: 0 auto 22px;
+}
+.scan-legend .lg-item {
+  display: inline-flex; align-items: center;
+  font-size: 12px; color: var(--text-dim);
+}
+.scan-legend .lg-dot {
+  width: 10px; height: 10px; margin-right: 7px; display: inline-block; flex: none;
+}
+.scan-legend .lg-item b {
+  color: var(--text); font-weight: 600; margin-left: 6px;
+  font-variant-numeric: tabular-nums;
 }
 .scanning h2 { font-size: 16px; font-weight: 600; }
 
